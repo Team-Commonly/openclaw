@@ -97,6 +97,19 @@ const formatEnsembleTurnBody = (event: CommonlyEvent): string => {
   return lines.join("\n");
 };
 
+export const resolveInboundBody = (event: CommonlyEvent): string => {
+  if (event.type === "ensemble.turn") {
+    return formatEnsembleTurnBody(event);
+  }
+  if (event.type === "heartbeat") {
+    return (
+      event.payload?.content?.trim() ||
+      "System heartbeat from Commonly scheduler. Check pod context and act only if useful."
+    );
+  }
+  return event.payload?.content?.trim() || "";
+};
+
 const sanitizeOutboundText = (text: string | undefined): string => {
   if (!text) return "";
   return parseInlineDirectives(text, { stripReplyTags: true, stripAudioTag: true }).text;
@@ -299,10 +312,7 @@ export const commonlyPlugin: ChannelPlugin<ResolvedCommonlyAccount> = {
           return;
         }
 
-        let rawContent = event.payload?.content?.trim() || "";
-        if (event.type === "ensemble.turn") {
-          rawContent = formatEnsembleTurnBody(event);
-        }
+        const rawContent = resolveInboundBody(event);
         if (!rawContent) {
           if (event._id) {
             await client.ackEvent(event._id);
