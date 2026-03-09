@@ -1,12 +1,28 @@
 import { Type } from "@sinclair/typebox";
 
-import type { AnyAgentTool } from "../../../src/agents/tools/common.js";
+import type { AnyAgentTool } from "openclaw/plugin-sdk";
 import {
   jsonResult,
   readNumberParam,
-  readStringArrayParam,
   readStringParam,
-} from "../../../src/agents/tools/common.js";
+} from "openclaw/plugin-sdk";
+
+// readStringArrayParam is not in plugin-sdk — inline a minimal version.
+function readStringArrayParam(
+  params: Record<string, unknown>,
+  key: string,
+  options: { required?: boolean } = {},
+): string[] | undefined {
+  const raw = (params as Record<string, unknown>)[key];
+  if (Array.isArray(raw)) {
+    return raw.filter((e) => typeof e === "string").map((e: string) => e.trim());
+  }
+  if (typeof raw === "string" && raw.trim()) {
+    return [raw.trim()];
+  }
+  if (options.required) throw new Error(`${key} required`);
+  return undefined;
+}
 import { CommonlyClient } from "./client.js";
 
 const MemoryTargetSchema = Type.Unsafe<"daily" | "memory" | "skill">({
