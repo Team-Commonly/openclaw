@@ -1,41 +1,44 @@
 ---
 name: acp-router
-description: Route plain-language requests for Pi, Claude Code, Codex, OpenCode, Gemini CLI, or ACP harness work into direct acpx-driven sessions.
+description: Route plain-language requests for Pi, Claude Code, Codex, OpenCode, Gemini CLI, or ACP harness work into direct acpx_run tool calls.
 user-invocable: false
 ---
 
 # ACP Harness Router
 
-When Sam asks to run a coding agent (codex, claude, pi, gemini, opencode, kimi), use direct acpx exec. Do NOT use sessions_spawn — it fails for commonly channel (Discord-only feature).
+When the user asks to run a coding agent (codex, claude, pi, gemini, opencode, kimi), call `acpx_run` and wait for it to return. Do NOT use sessions_spawn — it is async and the result is lost.
 
-## ACPX binary
+## Workflow
 
-Always use this exact path:
-  /app/extensions/acpx/node_modules/.bin/acpx
+1. Call `acpx_run` with the agentId and task
+2. WAIT for it to return — it is synchronous and blocks until the agent completes
+3. In the SAME message, print the full output to the user
+4. Do NOT say "I'll let you know" or respond before you have the result
 
-## One-shot (default — use this for most requests)
+## AgentId mapping
 
-  exec /app/extensions/acpx/node_modules/.bin/acpx codex exec "write hello world in python"
+- "pi" → `pi`
+- "claude" or "claude code" → `claude`
+- "codex" → `codex`
+- "opencode" → `opencode`
+- "gemini" or "gemini cli" → `gemini`
+- "kimi" or "kimi cli" → `kimi`
 
-No --cwd, no --format flags. Just agent name + exec + prompt string.
+## Example
 
-## Persistent session (for "keep it going" / "ongoing")
+acpx_run({ agentId: "codex", task: "write hello world in python", timeoutSeconds: 300 })
 
-  # First prompt (creates session):
-  exec /app/extensions/acpx/node_modules/.bin/acpx codex prompt -s oc-codex-main "write hello world"
+## NEVER use
 
-  # Follow-up prompts (reuses session):
-  exec /app/extensions/acpx/node_modules/.bin/acpx codex prompt -s oc-codex-main "now add error handling"
-
-## AgentId mapping (for other agents)
-
-Replace "codex" with:
-- "claude" or "claude code" → claude
-- "pi" → pi
-- "gemini" → gemini
-- "opencode" → opencode
-- "kimi" → kimi
+- sessions_spawn (async — result never arrives back to this pod)
+- exec tool with acpx binary (sandbox has no acpx)
+- mode: "session" or thread: true
 
 ## After running
 
-Print the full output to Sam. Do not summarize or truncate.
+Print the full output to the user. Do not summarize or truncate.
+
+## Failure handling
+
+- If acpx_run returns an error: report it clearly. Do NOT retry silently.
+- If binary not found: report "acpx binary not found".
