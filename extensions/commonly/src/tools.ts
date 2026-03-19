@@ -97,45 +97,61 @@ async function runAcpx(
   task: string,
   timeoutMs: number,
 ): Promise<string> {
+  // Run once with the primary account. Rate-limit can surface two ways:
+  //   (a) acpx exits non-zero with no stdout → spawnAcpx rejects
+  //   (b) acpx exits 0 (or has stdout) but the text itself is a rate-limit message
+  // Both paths land here so we handle either uniformly.
+  let firstOutput: string | null = null;
+  let firstRateLimited = false;
+
   try {
-    return await spawnAcpx(agentId, task, timeoutMs);
+    firstOutput = await spawnAcpx(agentId, task, timeoutMs);
+    if (isRateLimitError(firstOutput)) {
+      firstRateLimited = true;
+    } else {
+      return firstOutput; // genuine success
+    }
   } catch (err: unknown) {
     const acpxErr = err as AcpxError;
     const errMsg = acpxErr.acpxOutput ?? acpxErr.message ?? "";
     if (!isRateLimitError(errMsg)) {
       throw err;
     }
+    firstOutput = errMsg;
+    firstRateLimited = true;
+  }
 
-    // Rate-limit on account-1 — try account-2 if available.
-    let account2Json: string | null = null;
-    try {
-      account2Json = readFileSync(CODEX_AUTH2_PATH, "utf8");
-    } catch {
-      // account-2 not configured
-    }
-    if (!account2Json) {
-      throw new Error(`Codex rate-limited (account-1) and no account-2 auth configured.\n${errMsg}`);
-    }
+  if (!firstRateLimited) return firstOutput!;
 
-    // Backup account-1, swap in account-2, retry.
-    let account1Backup: string | null = null;
-    try {
-      account1Backup = readFileSync(CODEX_AUTH_PATH, "utf8");
-    } catch { /* missing — no backup */ }
+  // Rate-limit on account-1 — try account-2 if available.
+  let account2Json: string | null = null;
+  try {
+    account2Json = readFileSync(CODEX_AUTH2_PATH, "utf8");
+  } catch {
+    // account-2 not configured
+  }
+  if (!account2Json) {
+    throw new Error(`Codex rate-limited (account-1) and no account-2 auth configured.\n${firstOutput}`);
+  }
 
-    try {
-      writeFileSync(CODEX_AUTH_PATH, account2Json, "utf8");
-    } catch (writeErr: unknown) {
-      throw new Error(`Codex rate-limited; failed to swap to account-2: ${(writeErr as Error).message}`);
-    }
+  // Backup account-1, swap in account-2, retry.
+  let account1Backup: string | null = null;
+  try {
+    account1Backup = readFileSync(CODEX_AUTH_PATH, "utf8");
+  } catch { /* missing — no backup */ }
 
-    try {
-      return await spawnAcpx(agentId, task, timeoutMs);
-    } finally {
-      // Always restore account-1 so subsequent calls retry with the primary account.
-      if (account1Backup) {
-        try { writeFileSync(CODEX_AUTH_PATH, account1Backup, "utf8"); } catch { /* ignore */ }
-      }
+  try {
+    writeFileSync(CODEX_AUTH_PATH, account2Json, "utf8");
+  } catch (writeErr: unknown) {
+    throw new Error(`Codex rate-limited; failed to swap to account-2: ${(writeErr as Error).message}`);
+  }
+
+  try {
+    return await spawnAcpx(agentId, task, timeoutMs);
+  } finally {
+    // Always restore account-1 so subsequent calls retry with the primary account.
+    if (account1Backup) {
+      try { writeFileSync(CODEX_AUTH_PATH, account1Backup, "utf8"); } catch { /* ignore */ }
     }
   }
 }
