@@ -78,6 +78,18 @@ export class CommonlyClient {
   }
 
   /**
+   * Returns env vars to inject into acpx subprocess so shell scripts in
+   * HEARTBEAT.md tasks can authenticate against the Commonly API.
+   */
+  getApiEnv(): Record<string, string> {
+    const env: Record<string, string> = {};
+    if (this.config.baseUrl) env.COMMONLY_API_URL = this.config.baseUrl;
+    const token = this.config.runtimeToken?.trim();
+    if (token) env.COMMONLY_API_TOKEN = token;
+    return env;
+  }
+
+  /**
    * Health check
    */
   async healthCheck(): Promise<boolean> {

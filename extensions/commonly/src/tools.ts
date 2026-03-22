@@ -31,6 +31,7 @@ function resolveAcpxBin(): string {
 // Paths for Codex auth.json — shared PVC so init container and main container can both access.
 const CODEX_AUTH_PATH = "/home/node/.codex/auth.json";
 const CODEX_AUTH2_PATH = "/state/.codex/auth-2.json";
+const CODEX_AUTH3_PATH = "/state/.codex/auth-3.json";
 
 function isRateLimitError(message: string): boolean {
   const m = message.toLowerCase();
@@ -55,13 +56,14 @@ function spawnAcpx(
   agentId: string,
   task: string,
   timeoutMs: number,
+  extraEnv?: Record<string, string>,
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const bin = resolveAcpxBin();
     const args = [agentId, "exec", task];
     const child = spawn(bin, args, {
       cwd: "/workspace",
-      env: { ...process.env },
+      env: { ...process.env, ...extraEnv },
     });
     let stdout = "";
     let stderr = "";
@@ -96,6 +98,7 @@ async function runAcpx(
   agentId: string,
   task: string,
   timeoutMs: number,
+  extraEnv?: Record<string, string>,
 ): Promise<string> {
   // Run once with the primary account. Rate-limit can surface two ways:
   //   (a) acpx exits non-zero with no stdout → spawnAcpx rejects
@@ -105,7 +108,7 @@ async function runAcpx(
   let firstRateLimited = false;
 
   try {
-    firstOutput = await spawnAcpx(agentId, task, timeoutMs);
+    firstOutput = await spawnAcpx(agentId, task, timeoutMs, extraEnv);
     if (isRateLimitError(firstOutput)) {
       firstRateLimited = true;
     } else {
@@ -123,37 +126,49 @@ async function runAcpx(
 
   if (!firstRateLimited) return firstOutput!;
 
-  // Rate-limit on account-1 — try account-2 if available.
-  let account2Json: string | null = null;
-  try {
-    account2Json = readFileSync(CODEX_AUTH2_PATH, "utf8");
-  } catch {
-    // account-2 not configured
-  }
-  if (!account2Json) {
-    throw new Error(`Codex rate-limited (account-1) and no account-2 auth configured.\n${firstOutput}`);
-  }
-
-  // Backup account-1, swap in account-2, retry.
+  // Rate-limit on account-1 — try account-2 then account-3 if available.
+  const fallbackPaths = [CODEX_AUTH2_PATH, CODEX_AUTH3_PATH];
   let account1Backup: string | null = null;
   try {
     account1Backup = readFileSync(CODEX_AUTH_PATH, "utf8");
   } catch { /* missing — no backup */ }
 
-  try {
-    writeFileSync(CODEX_AUTH_PATH, account2Json, "utf8");
-  } catch (writeErr: unknown) {
-    throw new Error(`Codex rate-limited; failed to swap to account-2: ${(writeErr as Error).message}`);
-  }
+  let lastError = firstOutput;
+  for (let i = 0; i < fallbackPaths.length; i++) {
+    const fallbackPath = fallbackPaths[i];
+    const accountNum = i + 2;
+    let fallbackJson: string | null = null;
+    try {
+      fallbackJson = readFileSync(fallbackPath, "utf8");
+    } catch {
+      // account not configured
+    }
+    if (!fallbackJson) continue;
 
-  try {
-    return await spawnAcpx(agentId, task, timeoutMs);
-  } finally {
-    // Always restore account-1 so subsequent calls retry with the primary account.
-    if (account1Backup) {
-      try { writeFileSync(CODEX_AUTH_PATH, account1Backup, "utf8"); } catch { /* ignore */ }
+    try {
+      writeFileSync(CODEX_AUTH_PATH, fallbackJson, "utf8");
+    } catch (writeErr: unknown) {
+      throw new Error(`Codex rate-limited; failed to swap to account-${accountNum}: ${(writeErr as Error).message}`);
+    }
+
+    try {
+      const output = await spawnAcpx(agentId, task, timeoutMs, extraEnv);
+      if (!isRateLimitError(output)) return output;
+      lastError = output;
+    } catch (err: unknown) {
+      const acpxErr = err as AcpxError;
+      const errMsg = acpxErr.acpxOutput ?? acpxErr.message ?? "";
+      if (!isRateLimitError(errMsg)) throw err;
+      lastError = errMsg;
+    } finally {
+      // Restore account-1 for next call.
+      if (account1Backup) {
+        try { writeFileSync(CODEX_AUTH_PATH, account1Backup, "utf8"); } catch { /* ignore */ }
+      }
     }
   }
+
+  throw new Error(`Codex rate-limited on all configured accounts.\n${lastError}`);
 }
 
 // readStringArrayParam is not in plugin-sdk — inline a minimal version.
@@ -523,7 +538,10 @@ export class CommonlyTools {
           const agentId = readStringParam(params, "agentId", { required: true })!;
           const task = readStringParam(params, "task", { required: true })!;
           const timeoutSeconds = readNumberParam(params, "timeoutSeconds") ?? 300;
-          const output = await runAcpx(agentId, task, timeoutSeconds * 1000);
+          // Inject COMMONLY_API_URL + COMMONLY_API_TOKEN so shell scripts in
+          // HEARTBEAT.md tasks can authenticate against the Commonly API.
+          const apiEnv = client.getApiEnv();
+          const output = await runAcpx(agentId, task, timeoutSeconds * 1000, apiEnv);
           return jsonResult({ ok: true, output });
         },
       },
