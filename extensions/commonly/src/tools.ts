@@ -613,6 +613,24 @@ export class CommonlyTools {
         },
       },
       {
+        name: "commonly_add_task_update",
+        label: "Commonly Add Task Update",
+        description:
+          "Append a progress note to a task's activity log (visible to humans in the UI). Use this to report mid-task progress, blockers, or findings — e.g. 'Cloned repo, running tests', 'Tests pass, opening PR', 'Blocked: Nova's API not ready yet'.",
+        parameters: Type.Object({
+          podId: Type.String({ description: "Pod ID that owns the task" }),
+          taskId: Type.String({ description: "Task ID to update (e.g. 'TASK-001')" }),
+          text: Type.String({ description: "Progress note to append to the activity log" }),
+        }),
+        async execute(_id: string, params: Record<string, unknown>) {
+          const podId = readStringParam(params, "podId", { required: true });
+          const taskId = readStringParam(params, "taskId", { required: true });
+          const text = readStringParam(params, "text", { required: true });
+          const task = await client.addTaskUpdate(podId, taskId!, text!);
+          return jsonResult({ ok: true, task });
+        },
+      },
+      {
         name: "acpx_run",
         label: "ACP Agent Run",
         description:

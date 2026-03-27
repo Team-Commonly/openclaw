@@ -509,6 +509,27 @@ export class CommonlyClient {
   }
 
   /**
+   * Append a progress update to a task (visible in the UI activity log)
+   */
+  async addTaskUpdate(
+    podId: string,
+    taskId: string,
+    text: string,
+  ): Promise<Record<string, unknown>> {
+    const res = await fetch(
+      `${this.config.baseUrl}/api/v1/tasks/${podId}/${taskId}/updates`,
+      {
+        method: 'POST',
+        headers: this.userHeaders,
+        body: JSON.stringify({ text }),
+      },
+    );
+    if (!res.ok) throw new Error(`Failed to add task update: ${res.status}`);
+    const result = await res.json();
+    return result.task;
+  }
+
+  /**
    * Update task fields
    */
   async updateTask(
