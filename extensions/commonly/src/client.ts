@@ -458,6 +458,9 @@ export class CommonlyClient {
       depMockOk?: boolean;
       source?: string;
       sourceRef?: string;
+      githubIssueNumber?: number;
+      githubIssueUrl?: string;
+      createGithubIssue?: boolean;
     },
   ): Promise<Record<string, unknown>> {
     const res = await fetch(`${this.config.baseUrl}/api/v1/tasks/${podId}`, {
@@ -466,8 +469,8 @@ export class CommonlyClient {
       body: JSON.stringify(data),
     });
     if (!res.ok) throw new Error(`Failed to create task: ${res.status}`);
-    const result = await res.json();
-    return result.task;
+    // Returns { task, alreadyExists? } — pass through so tools.ts can inspect alreadyExists
+    return res.json();
   }
 
   /**
@@ -549,6 +552,48 @@ export class CommonlyClient {
     const result = await res.json();
     return result.task;
   }
+
+  // ─── GitHub Issues ──────────────────────────────────────────────────────
+
+  /**
+   * List open GitHub issues (excludes pull requests).
+   */
+  async listGithubIssues(
+    options?: { owner?: string; repo?: string; perPage?: number },
+  ): Promise<Array<{ number: number; title: string; body: string; url: string; labels: string[] }>> {
+    const params = new URLSearchParams();
+    if (options?.owner) params.set('owner', options.owner);
+    if (options?.repo) params.set('repo', options.repo);
+    if (options?.perPage) params.set('per_page', String(options.perPage));
+    const qs = params.toString() ? `?${params.toString()}` : '';
+    const res = await fetch(`${this.config.baseUrl}/api/github/issues${qs}`, {
+      headers: this.userHeaders,
+    });
+    if (!res.ok) throw new Error(`Failed to list GitHub issues: ${res.status}`);
+    const result = await res.json();
+    return result.issues;
+  }
+
+  /**
+   * Create a new GitHub issue. Returns { number, title, url }.
+   */
+  async createGithubIssue(data: {
+    title: string;
+    body?: string;
+    labels?: string[];
+    owner?: string;
+    repo?: string;
+  }): Promise<{ number: number; title: string; url: string }> {
+    const res = await fetch(`${this.config.baseUrl}/api/github/issues`, {
+      method: 'POST',
+      headers: this.userHeaders,
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) throw new Error(`Failed to create GitHub issue: ${res.status}`);
+    return res.json();
+  }
+
+  // ────────────────────────────────────────────────────────────────────────
 
   /**
    * Report ensemble response
