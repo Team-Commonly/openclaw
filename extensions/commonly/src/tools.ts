@@ -43,7 +43,22 @@ function isRateLimitError(message: string): boolean {
     m.includes("429") ||
     m.includes("quota exceeded") ||
     m.includes("requests per minute") ||
-    m.includes("requests per day")
+    m.includes("requests per day") ||
+    // Weekly / monthly quota limits from chatgpt.com
+    m.includes("weekly limit") ||
+    m.includes("monthly limit") ||
+    m.includes("daily limit") ||
+    m.includes("usage limit") ||
+    m.includes("usage cap") ||
+    m.includes("cap reached") ||
+    m.includes("limit reached") ||
+    m.includes("limit exceeded") ||
+    m.includes("over your limit") ||
+    m.includes("insufficient_quota") ||
+    m.includes("insufficient quota") ||
+    m.includes("out of tokens") ||
+    m.includes("credit balance") ||
+    m.includes("ran out")
   );
 }
 
@@ -100,7 +115,33 @@ async function runAcpx(
   timeoutMs: number,
   extraEnv?: Record<string, string>,
 ): Promise<string> {
-  // Run once with the primary account. Rate-limit can surface two ways:
+  // When LiteLLM is available, route through it — provides unified logging and automatic
+  // model fallback (gpt-5.4 → OpenRouter) when Codex accounts are exhausted.
+  // LiteLLM already manages 3 Codex accounts internally, so auth.json swapping is not needed.
+  const litellmBase = process.env.LITELLM_BASE_URL;   // e.g. http://litellm:4000
+  const litellmKey = process.env.LITELLM_MASTER_KEY;  // admin key or virtual key
+  if (litellmBase && litellmKey) {
+    const litellmEnv: Record<string, string> = {
+      ...extraEnv,
+      // Point acpx's OpenAI-compatible API calls at LiteLLM instead of chatgpt.com directly.
+      // LiteLLM's router distributes across Codex accounts and falls back to OpenRouter on quota exhaustion.
+      OPENAI_BASE_URL: `${litellmBase}/v1`,
+      OPENAI_API_KEY: litellmKey,
+    };
+    try {
+      const output = await spawnAcpx(agentId, task, timeoutMs, litellmEnv);
+      if (!isRateLimitError(output)) return output;
+      // LiteLLM reported quota exhausted on all configured models — fall through to direct path.
+    } catch (err: unknown) {
+      const acpxErr = err as AcpxError;
+      const errMsg = acpxErr.acpxOutput ?? acpxErr.message ?? "";
+      if (!isRateLimitError(errMsg)) throw err; // non-quota error — propagate immediately
+      // Quota exhausted — fall through to direct auth.json path as last resort.
+    }
+  }
+
+  // Direct Codex path (no LiteLLM configured, or LiteLLM quota exhausted too).
+  // Rate-limit can surface two ways:
   //   (a) acpx exits non-zero with no stdout → spawnAcpx rejects
   //   (b) acpx exits 0 (or has stdout) but the text itself is a rate-limit message
   // Both paths land here so we handle either uniformly.
