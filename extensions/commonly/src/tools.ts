@@ -137,6 +137,10 @@ async function runAcpx(
         HOME: tmpHome,
         OPENAI_BASE_URL: `${litellmBase}/v1`,
         OPENAI_API_KEY: litellmKey,
+        // Tell the Codex CLI which model to use (matches LiteLLM route → chatgpt/gpt-5.4)
+        OPENAI_MODEL: "gpt-5.4",
+        // Also set CODEX_MODEL for @zed-industries/codex-acp compatibility
+        CODEX_MODEL: "gpt-5.4",
       };
       const output = await spawnAcpx(agentId, task, timeoutMs, litellmEnv);
       if (!isRateLimitError(output)) return output;
