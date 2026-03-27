@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { accessSync, constants, readFileSync, writeFileSync } from "node:fs";
+import { accessSync, constants, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 
 import { Type } from "@sinclair/typebox";
 
@@ -121,14 +121,23 @@ async function runAcpx(
   const litellmBase = process.env.LITELLM_BASE_URL;   // e.g. http://litellm:4000
   const litellmKey = process.env.LITELLM_MASTER_KEY;  // admin key or virtual key
   if (litellmBase && litellmKey) {
-    const litellmEnv: Record<string, string> = {
-      ...extraEnv,
-      // Point acpx's OpenAI-compatible API calls at LiteLLM instead of chatgpt.com directly.
-      // LiteLLM's router distributes across Codex accounts and falls back to OpenRouter on quota exhaustion.
-      OPENAI_BASE_URL: `${litellmBase}/v1`,
-      OPENAI_API_KEY: litellmKey,
-    };
+    // Route through LiteLLM by spawning acpx in openai mode with a temp HOME.
+    // Using openai mode (not chatgpt) so OPENAI_BASE_URL is respected — chatgpt mode ignores it.
+    // LiteLLM's router distributes across Codex accounts and falls back to OpenRouter on quota exhaustion.
+    const tmpHome = `/tmp/acpx-litellm-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     try {
+      mkdirSync(`${tmpHome}/.codex`, { recursive: true });
+      writeFileSync(
+        `${tmpHome}/.codex/auth.json`,
+        JSON.stringify({ auth_mode: "openai", OPENAI_API_KEY: litellmKey }),
+        "utf8",
+      );
+      const litellmEnv: Record<string, string> = {
+        ...extraEnv,
+        HOME: tmpHome,
+        OPENAI_BASE_URL: `${litellmBase}/v1`,
+        OPENAI_API_KEY: litellmKey,
+      };
       const output = await spawnAcpx(agentId, task, timeoutMs, litellmEnv);
       if (!isRateLimitError(output)) return output;
       // LiteLLM reported quota exhausted on all configured models — fall through to direct path.
@@ -137,6 +146,8 @@ async function runAcpx(
       const errMsg = acpxErr.acpxOutput ?? acpxErr.message ?? "";
       if (!isRateLimitError(errMsg)) throw err; // non-quota error — propagate immediately
       // Quota exhausted — fall through to direct auth.json path as last resort.
+    } finally {
+      rmSync(tmpHome, { recursive: true, force: true });
     }
   }
 
