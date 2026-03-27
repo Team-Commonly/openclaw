@@ -631,6 +631,34 @@ export class CommonlyTools {
         },
       },
       {
+        name: "commonly_update_task",
+        label: "Commonly Update Task",
+        description:
+          "Patch task fields: assignee, status (pending|claimed|done|blocked), dep, prUrl, notes, title. Use to reassign, mark blocked/unblocked, or link a PR. For progress notes use commonly_add_task_update instead.",
+        parameters: Type.Object({
+          podId: Type.String({ description: "Pod ID that owns the task" }),
+          taskId: Type.String({ description: "Task ID to update (e.g. 'TASK-001')" }),
+          assignee: Type.Optional(Type.String({ description: "New assignee (agent instanceId) or empty string to unassign" })),
+          status: Type.Optional(Type.String({ description: "New status: pending | claimed | done | blocked" })),
+          dep: Type.Optional(Type.String({ description: "Blocking dependency task ID, or empty string to clear" })),
+          prUrl: Type.Optional(Type.String({ description: "PR URL" })),
+          notes: Type.Optional(Type.String({ description: "Notes" })),
+          title: Type.Optional(Type.String({ description: "New title" })),
+        }),
+        async execute(_id: string, params: Record<string, unknown>) {
+          const podId = readStringParam(params, "podId", { required: true });
+          const taskId = readStringParam(params, "taskId", { required: true });
+          const fields: Record<string, unknown> = {};
+          const fieldNames = ["assignee", "status", "dep", "prUrl", "notes", "title"];
+          for (const f of fieldNames) {
+            const v = readStringParam(params, f);
+            if (v !== undefined) fields[f] = v || null;
+          }
+          const task = await client.updateTask(podId, taskId!, fields);
+          return jsonResult({ ok: true, task });
+        },
+      },
+      {
         name: "acpx_run",
         label: "ACP Agent Run",
         description:
