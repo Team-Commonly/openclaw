@@ -517,6 +517,102 @@ export class CommonlyTools {
         },
       },
       {
+        name: "commonly_get_tasks",
+        label: "Commonly Get Tasks",
+        description:
+          "List tasks for a pod. Optionally filter by assignee (agent instanceId) and/or status (pending/claimed/done/blocked). Returns [{taskId, title, assignee, status, dep, claimedBy, prUrl, notes}].",
+        parameters: Type.Object({
+          podId: Type.String({ description: "Pod ID to list tasks for" }),
+          assignee: Type.Optional(Type.String({ description: "Filter by assignee instanceId (e.g. 'nova')" })),
+          status: Type.Optional(Type.String({ description: "Filter by status: pending, claimed, done, blocked" })),
+        }),
+        async execute(_id: string, params: Record<string, unknown>) {
+          const podId = readStringParam(params, "podId", { required: true });
+          const assignee = readStringParam(params, "assignee");
+          const status = readStringParam(params, "status");
+          const tasks = await client.getTasks(podId, {
+            assignee: assignee || undefined,
+            status: status || undefined,
+          });
+          return jsonResult({ ok: true, tasks });
+        },
+      },
+      {
+        name: "commonly_create_task",
+        label: "Commonly Create Task",
+        description:
+          "Create a new task in a pod. Returns the created task with its taskId (e.g. TASK-001). Use source='agent' when creating tasks programmatically.",
+        parameters: Type.Object({
+          podId: Type.String({ description: "Pod ID to create the task in" }),
+          title: Type.String({ description: "Task title / description" }),
+          assignee: Type.Optional(Type.String({ description: "Agent instanceId to assign (e.g. 'nova')" })),
+          dep: Type.Optional(Type.String({ description: "Blocking dependency taskId (e.g. 'TASK-001')" })),
+          depMockOk: Type.Optional(Type.Boolean({ description: "True if task can start with mocks even if dep unmet" })),
+          source: Type.Optional(Type.String({ description: "Source: 'human' | 'agent' | 'github'" })),
+          sourceRef: Type.Optional(Type.String({ description: "External reference (e.g. 'GH#12')" })),
+        }),
+        async execute(_id: string, params: Record<string, unknown>) {
+          const podId = readStringParam(params, "podId", { required: true });
+          const title = readStringParam(params, "title", { required: true });
+          const assignee = readStringParam(params, "assignee");
+          const dep = readStringParam(params, "dep");
+          const depMockOk = params.depMockOk === true;
+          const source = readStringParam(params, "source");
+          const sourceRef = readStringParam(params, "sourceRef");
+          const task = await client.createTask(podId, {
+            title: title!,
+            assignee: assignee || undefined,
+            dep: dep || undefined,
+            depMockOk,
+            source: source || undefined,
+            sourceRef: sourceRef || undefined,
+          });
+          return jsonResult({ ok: true, task });
+        },
+      },
+      {
+        name: "commonly_claim_task",
+        label: "Commonly Claim Task",
+        description:
+          "Atomically claim a pending task. Only one agent wins — returns ok:true with the task on success, or ok:false with claimedBy/status if already taken. Always check ok before proceeding.",
+        parameters: Type.Object({
+          podId: Type.String({ description: "Pod ID that owns the task" }),
+          taskId: Type.String({ description: "Task ID to claim (e.g. 'TASK-001')" }),
+        }),
+        async execute(_id: string, params: Record<string, unknown>) {
+          const podId = readStringParam(params, "podId", { required: true });
+          const taskId = readStringParam(params, "taskId", { required: true });
+          const result = await client.claimTask(podId, taskId!);
+          if (result.error) {
+            return jsonResult({ ok: false, error: result.error, claimedBy: result.claimedBy, status: result.status });
+          }
+          return jsonResult({ ok: true, task: result.task });
+        },
+      },
+      {
+        name: "commonly_complete_task",
+        label: "Commonly Complete Task",
+        description:
+          "Mark a claimed task as done. Optionally attach a PR URL and notes. Returns the updated task.",
+        parameters: Type.Object({
+          podId: Type.String({ description: "Pod ID that owns the task" }),
+          taskId: Type.String({ description: "Task ID to complete (e.g. 'TASK-001')" }),
+          prUrl: Type.Optional(Type.String({ description: "URL of the PR that fulfils this task" })),
+          notes: Type.Optional(Type.String({ description: "Completion notes" })),
+        }),
+        async execute(_id: string, params: Record<string, unknown>) {
+          const podId = readStringParam(params, "podId", { required: true });
+          const taskId = readStringParam(params, "taskId", { required: true });
+          const prUrl = readStringParam(params, "prUrl");
+          const notes = readStringParam(params, "notes");
+          const task = await client.completeTask(podId, taskId!, {
+            prUrl: prUrl || undefined,
+            notes: notes || undefined,
+          });
+          return jsonResult({ ok: true, task });
+        },
+      },
+      {
         name: "acpx_run",
         label: "ACP Agent Run",
         description:

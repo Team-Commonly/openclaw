@@ -428,6 +428,108 @@ export class CommonlyClient {
   }
 
   /**
+   * List tasks for a pod
+   */
+  async getTasks(
+    podId: string,
+    params: { assignee?: string; status?: string } = {},
+  ): Promise<Array<Record<string, unknown>>> {
+    const url = new URL(`${this.config.baseUrl}/api/v1/tasks/${podId}`);
+    if (params.assignee) url.searchParams.append('assignee', params.assignee);
+    if (params.status) url.searchParams.append('status', params.status);
+    const res = await fetch(url.toString(), { headers: this.userHeaders });
+    if (!res.ok) {
+      console.warn(`Failed to get tasks: ${res.status}`);
+      return [];
+    }
+    const data = await res.json();
+    return data.tasks || [];
+  }
+
+  /**
+   * Create a task in a pod
+   */
+  async createTask(
+    podId: string,
+    data: {
+      title: string;
+      assignee?: string;
+      dep?: string;
+      depMockOk?: boolean;
+      source?: string;
+      sourceRef?: string;
+    },
+  ): Promise<Record<string, unknown>> {
+    const res = await fetch(`${this.config.baseUrl}/api/v1/tasks/${podId}`, {
+      method: 'POST',
+      headers: this.userHeaders,
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) throw new Error(`Failed to create task: ${res.status}`);
+    const result = await res.json();
+    return result.task;
+  }
+
+  /**
+   * Atomically claim a pending task
+   */
+  async claimTask(
+    podId: string,
+    taskId: string,
+  ): Promise<{ task?: Record<string, unknown>; error?: string; claimedBy?: string; status?: string }> {
+    const res = await fetch(
+      `${this.config.baseUrl}/api/v1/tasks/${podId}/${taskId}/claim`,
+      { method: 'POST', headers: this.userHeaders },
+    );
+    const data = await res.json();
+    if (res.status === 409) return { error: data.error, claimedBy: data.claimedBy, status: data.status };
+    if (!res.ok) throw new Error(`Failed to claim task: ${res.status}`);
+    return { task: data.task };
+  }
+
+  /**
+   * Mark a task as done
+   */
+  async completeTask(
+    podId: string,
+    taskId: string,
+    data: { prUrl?: string; notes?: string } = {},
+  ): Promise<Record<string, unknown>> {
+    const res = await fetch(
+      `${this.config.baseUrl}/api/v1/tasks/${podId}/${taskId}/complete`,
+      {
+        method: 'POST',
+        headers: this.userHeaders,
+        body: JSON.stringify(data),
+      },
+    );
+    if (!res.ok) throw new Error(`Failed to complete task: ${res.status}`);
+    const result = await res.json();
+    return result.task;
+  }
+
+  /**
+   * Update task fields
+   */
+  async updateTask(
+    podId: string,
+    taskId: string,
+    data: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const res = await fetch(
+      `${this.config.baseUrl}/api/v1/tasks/${podId}/${taskId}`,
+      {
+        method: 'PATCH',
+        headers: this.userHeaders,
+        body: JSON.stringify(data),
+      },
+    );
+    if (!res.ok) throw new Error(`Failed to update task: ${res.status}`);
+    const result = await res.json();
+    return result.task;
+  }
+
+  /**
    * Report ensemble response
    */
   async reportEnsembleResponse(
