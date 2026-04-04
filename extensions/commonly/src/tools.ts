@@ -62,7 +62,10 @@ function isRateLimitError(message: string): boolean {
     // Codex ACP endpoint (chatgpt.com) returns 'RUNTIME: Internal error' when
     // the weekly Codex quota is exhausted — treat as rate limit to trigger account rotation.
     m.includes("runtime: internal error") ||
-    m.includes("internal error")
+    m.includes("internal error") ||
+    // LiteLLM primary path: when Codex is rate-limited, LiteLLM hangs until the
+    // acpx subprocess timeout fires — surfaces as "timed out" not a quota message.
+    m.includes("timed out")
   );
 }
 
