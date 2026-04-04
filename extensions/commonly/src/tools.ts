@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { accessSync, constants, readFileSync, writeFileSync } from "node:fs";
+import { accessSync, constants } from "node:fs";
 
 import { Type } from "@sinclair/typebox";
 
@@ -28,10 +28,6 @@ function resolveAcpxBin(): string {
   return "acpx"; // fallback: hope it's in PATH
 }
 
-// Paths for Codex auth.json — shared PVC so init container and main container can both access.
-const CODEX_AUTH_PATH = "/home/node/.codex/auth.json";
-const CODEX_AUTH2_PATH = "/state/.codex/auth-2.json";
-const CODEX_AUTH3_PATH = "/state/.codex/auth-3.json";
 
 function isRateLimitError(message: string): boolean {
   const m = message.toLowerCase();
@@ -122,78 +118,18 @@ async function runAcpx(
   timeoutMs: number,
   extraEnv?: Record<string, string>,
 ): Promise<string> {
-  // Direct Codex path via acpx codex exec.
-  // acpx codex connects to chatgpt.com's ACP endpoint using chatgpt OAuth tokens.
-  // Note: acpx codex does NOT use OPENAI_BASE_URL — it always connects to chatgpt.com.
-  // Rate-limit can surface two ways:
-  //   (a) acpx exits non-zero with no stdout → spawnAcpx rejects
-  //   (b) acpx exits 0 (or has stdout) but the text itself is a rate-limit message
-  // Both paths land here so we handle either uniformly.
-  let firstOutput: string | null = null;
-  let firstRateLimited = false;
-
+  // All routing goes through LiteLLM (OPENAI_BASE_URL injected via extraEnv).
+  // LiteLLM handles multi-account rotation and OpenRouter fallback internally.
+  // We just run acpx once and surface any error — no direct OAuth token swapping here.
   try {
-    firstOutput = await spawnAcpx(agentId, task, timeoutMs, extraEnv);
-    if (isRateLimitError(firstOutput)) {
-      firstRateLimited = true;
-    } else {
-      return firstOutput; // genuine success
+    const output = await spawnAcpx(agentId, task, timeoutMs, extraEnv);
+    if (isRateLimitError(output)) {
+      throw new Error(`Codex rate-limited: ${output}`);
     }
+    return output;
   } catch (err: unknown) {
-    const acpxErr = err as AcpxError;
-    const errMsg = acpxErr.acpxOutput ?? acpxErr.message ?? "";
-    if (!isRateLimitError(errMsg)) {
-      throw err;
-    }
-    firstOutput = errMsg;
-    firstRateLimited = true;
+    throw err;
   }
-
-  if (!firstRateLimited) return firstOutput!;
-
-  // Rate-limit on account-1 — try account-2 then account-3 if available.
-  const fallbackPaths = [CODEX_AUTH2_PATH, CODEX_AUTH3_PATH];
-  let account1Backup: string | null = null;
-  try {
-    account1Backup = readFileSync(CODEX_AUTH_PATH, "utf8");
-  } catch { /* missing — no backup */ }
-
-  let lastError = firstOutput;
-  for (let i = 0; i < fallbackPaths.length; i++) {
-    const fallbackPath = fallbackPaths[i];
-    const accountNum = i + 2;
-    let fallbackJson: string | null = null;
-    try {
-      fallbackJson = readFileSync(fallbackPath, "utf8");
-    } catch {
-      // account not configured
-    }
-    if (!fallbackJson) continue;
-
-    try {
-      writeFileSync(CODEX_AUTH_PATH, fallbackJson, "utf8");
-    } catch (writeErr: unknown) {
-      throw new Error(`Codex rate-limited; failed to swap to account-${accountNum}: ${(writeErr as Error).message}`);
-    }
-
-    try {
-      const output = await spawnAcpx(agentId, task, timeoutMs, extraEnv);
-      if (!isRateLimitError(output)) return output;
-      lastError = output;
-    } catch (err: unknown) {
-      const acpxErr = err as AcpxError;
-      const errMsg = acpxErr.acpxOutput ?? acpxErr.message ?? "";
-      if (!isRateLimitError(errMsg)) throw err;
-      lastError = errMsg;
-    } finally {
-      // Restore account-1 for next call.
-      if (account1Backup) {
-        try { writeFileSync(CODEX_AUTH_PATH, account1Backup, "utf8"); } catch { /* ignore */ }
-      }
-    }
-  }
-
-  throw new Error(`Codex rate-limited on all configured accounts.\n${lastError}`);
 }
 
 // readStringArrayParam is not in plugin-sdk — inline a minimal version.
