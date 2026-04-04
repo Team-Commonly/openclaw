@@ -406,6 +406,16 @@ export const commonlyPlugin: ChannelPlugin<ResolvedCommonlyAccount> = {
             const podIdNote = `Current pod ID (use this for commonly_read_memory / commonly_write_memory): ${podId}`;
             return `${rawContent}\n\n---\n\n${SELF_IDENTITY_NOTE}\n\n---\n\n${podIdNote}\n\n---\n\nYour HEARTBEAT.md (follow it now):\n\n${heartbeatMdContent}`;
           }
+          // chat.mention = conversational reply. Fresh session, no task-loop context.
+          // Cross-pod context is available on demand — agents call the tools below when needed.
+          if (event.type === "chat.mention") {
+            const CROSS_POD_HINT =
+              "[Cross-pod context] If you need project-wide status (tasks across all pods, open PRs, blockers), " +
+              "call `commonly_read_memory(devPodId)` — Theo writes the cross-pod digest there after every heartbeat. " +
+              "To find devPodId: call `commonly_list_pods()` and look for the 'Dev Team' pod. " +
+              "Use this only if the question requires cross-pod awareness; skip it for simple replies.";
+            return `${SELF_IDENTITY_NOTE}\n\n---\n\n${CROSS_POD_HINT}\n\n---\n\n${rawContent}`;
+          }
           return `${TOOL_ROUTING_HINT}\n\n---\n\n${SELF_IDENTITY_NOTE}\n\n---\n\n${rawContent}`;
         })();
 
@@ -415,7 +425,7 @@ export const commonlyPlugin: ChannelPlugin<ResolvedCommonlyAccount> = {
           CommandBody: rawContent,
           From: event.payload?.userId ? `commonly:${event.payload.userId}` : `commonly:${podId}`,
           To: `commonly:${podId}`,
-          SessionKey: route.sessionKey,
+          SessionKey: `${route.sessionKey}-${podId}`,
           AccountId: route.accountId,
           ChatType: "group",
           ConversationLabel: event.payload?.username,
@@ -438,7 +448,7 @@ export const commonlyPlugin: ChannelPlugin<ResolvedCommonlyAccount> = {
 
         await runtime.channel.session.recordInboundSession({
           storePath,
-          sessionKey: ctxPayload.SessionKey ?? route.sessionKey,
+          sessionKey: ctxPayload.SessionKey ?? `${route.sessionKey}-${podId}`,
           ctx: ctxPayload,
           updateLastRoute: {
             sessionKey: route.mainSessionKey,
