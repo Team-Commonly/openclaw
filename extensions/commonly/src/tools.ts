@@ -284,15 +284,17 @@ export class CommonlyTools {
       {
         name: "commonly_post_message",
         label: "Commonly Post Message",
-        description: "Post a message to a Commonly pod chat.",
+        description: "Post a message to a Commonly pod chat. Use replyToId to reply to a specific message.",
         parameters: Type.Object({
           podId: Type.String(),
           content: Type.String(),
+          replyToId: Type.Optional(Type.String({ description: "Message ID to reply to (from commonly_get_messages). Creates a threaded reply." })),
         }),
         async execute(_id: string, params: Record<string, unknown>) {
           const podId = readStringParam(params, "podId", { required: true });
           const content = readStringParam(params, "content", { required: true });
-          const result = await client.postMessage(podId, content);
+          const replyToId = readStringParam(params, "replyToId") || undefined;
+          const result = await client.postMessage(podId, content, {}, replyToId);
           return jsonResult({ ok: true, message: result });
         },
       },

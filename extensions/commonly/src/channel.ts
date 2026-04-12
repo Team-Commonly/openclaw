@@ -111,9 +111,10 @@ export const resolveInboundBody = (event: CommonlyEvent): string => {
   return event.payload?.content?.trim() || "";
 };
 
-const sanitizeOutboundText = (text: string | undefined): string => {
-  if (!text) return "";
-  return parseInlineDirectives(text, { stripReplyTags: true, stripAudioTag: true }).text;
+const sanitizeOutboundText = (text: string | undefined): { text: string; replyToId?: string } => {
+  if (!text) return { text: "" };
+  const parsed = parseInlineDirectives(text, { stripReplyTags: true, stripAudioTag: true });
+  return { text: parsed.text, replyToId: parsed.replyToId };
 };
 
 const scrubNoReplyAndRepeats = (text: string, maxChars = 1600): string => {
@@ -188,13 +189,14 @@ export const commonlyPlugin: ChannelPlugin<ResolvedCommonlyAccount> = {
         instanceId: account.instanceId,
       });
       const podId = normalizePodId(to);
-      const message = sanitizeOutboundText(text ?? "").trim();
+      const sanitized = sanitizeOutboundText(text ?? "");
+      const message = sanitized.text.trim();
       if (!message) return { channel: "commonly", messageId: `${podId}:${Date.now()}` };
       if (threadId) {
         await client.postThreadComment(String(threadId), message);
         return { channel: "commonly", messageId: String(threadId) };
       }
-      await client.postMessage(podId, message);
+      await client.postMessage(podId, message, {}, sanitized.replyToId);
       return { channel: "commonly", messageId: `${podId}:${Date.now()}` };
     },
     sendMedia: async ({ to, text, mediaUrl, threadId, accountId }) => {
@@ -207,15 +209,16 @@ export const commonlyPlugin: ChannelPlugin<ResolvedCommonlyAccount> = {
         instanceId: account.instanceId,
       });
       const podId = normalizePodId(to);
+      const sanitized = sanitizeOutboundText(text ?? "");
       const message = [
-        sanitizeOutboundText(text ?? ""),
+        sanitized.text,
         mediaUrl?.trim() || "",
       ].filter(Boolean).join("\n");
       if (threadId) {
         await client.postThreadComment(String(threadId), message);
         return { channel: "commonly", messageId: String(threadId) };
       }
-      await client.postMessage(podId, message);
+      await client.postMessage(podId, message, {}, sanitized.replyToId);
       return { channel: "commonly", messageId: `${podId}:${Date.now()}` };
     },
   },
@@ -474,7 +477,9 @@ export const commonlyPlugin: ChannelPlugin<ResolvedCommonlyAccount> = {
             responsePrefixContextProvider: prefixContext.responsePrefixContextProvider,
             humanDelay: runtime.channel.reply.resolveHumanDelayConfig(cfg, route.agentId),
             deliver: async (payload: ReplyPayload) => {
-              const text = scrubNoReplyAndRepeats(sanitizeOutboundText(payload.text ?? ""));
+              const sanitized = sanitizeOutboundText(payload.text ?? "");
+              const text = scrubNoReplyAndRepeats(sanitized.text);
+              const replyToId = sanitized.replyToId;
               const mediaUrl = payload.mediaUrl;
               const message = [text.trim(), mediaUrl?.trim() || ""].filter(Boolean).join("\n");
               if (!message) {
@@ -493,7 +498,7 @@ export const commonlyPlugin: ChannelPlugin<ResolvedCommonlyAccount> = {
                   sourceEventType: event.type,
                   sourceEventId: event._id,
                   heartbeatTrigger: event.payload?.trigger,
-                });
+                }, replyToId);
                 ctx.log?.info?.(
                   `[${connectionKey}] message posted id=${eventId} pod=${podId} chars=${message.length} `
                   + `postedId=${String(posted?.id || "n/a")}`,
