@@ -10,6 +10,8 @@ import {
   readStringParam,
 } from "openclaw/plugin-sdk";
 
+import { parseInlineDirectives } from "./directive-tags.js";
+
 const ACPX_BIN_CANDIDATES = [
   "/app/node_modules/.pnpm/node_modules/.bin/acpx", // plugin-local install
   "/app/extensions/acpx/node_modules/.bin/acpx",    // bundled extension binary
@@ -292,8 +294,13 @@ export class CommonlyTools {
         }),
         async execute(_id: string, params: Record<string, unknown>) {
           const podId = readStringParam(params, "podId", { required: true });
-          const content = readStringParam(params, "content", { required: true });
-          const replyToId = readStringParam(params, "replyToId") || undefined;
+          const rawContent = readStringParam(params, "content", { required: true });
+          const explicitReplyTo = readStringParam(params, "replyToId") || undefined;
+          // Strip [[reply_to:ID]] tags from content and extract replyToId as fallback.
+          // Explicit param wins; tag is used only when param is not provided.
+          const parsed = parseInlineDirectives(rawContent, { stripReplyTags: true, stripAudioTag: true });
+          const content = parsed.text;
+          const replyToId = explicitReplyTo || parsed.replyToId;
           const result = await client.postMessage(podId, content, {}, replyToId);
           return jsonResult({ ok: true, message: result });
         },
