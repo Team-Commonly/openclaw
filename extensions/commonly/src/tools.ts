@@ -81,10 +81,19 @@ function spawnAcpx(
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const bin = resolveAcpxBin();
-    const args = [agentId, "exec", task];
+    // Route acpx through LiteLLM proxy (chatgpt/ provider with rotated auth).
+    // codex-acp talks a proprietary ACP/Realtime protocol to chatgpt.com that
+    // LiteLLM can't proxy — use opencode which speaks OpenAI chat completions.
+    const resolvedAgent = agentId === "codex" ? "opencode" : agentId;
+    const args = ["--approve-all", resolvedAgent, "exec", task];
+    const liteLLMEnv: Record<string, string> = {};
+    const baseUrl = process.env.LITELLM_BASE_URL ?? "http://litellm:4000";
+    const key = process.env.LITELLM_MASTER_KEY ?? process.env.OPENAI_API_KEY;
+    liteLLMEnv.OPENAI_BASE_URL = baseUrl;
+    if (key) liteLLMEnv.OPENAI_API_KEY = key;
     const child = spawn(bin, args, {
       cwd: "/workspace",
-      env: { ...process.env, ...extraEnv },
+      env: { ...process.env, ...liteLLMEnv, ...extraEnv },
     });
     let stdout = "";
     let stderr = "";
