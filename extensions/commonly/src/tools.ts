@@ -11,6 +11,28 @@ import {
 } from "openclaw/plugin-sdk";
 
 import { parseInlineDirectives } from "./directive-tags.js";
+import type { MemorySectionName, MemoryVisibility } from "./client.js";
+
+// ADR-003 Phase 2 section taxonomy — mirrors the backend validator in
+// backend/routes/agentsRuntime.ts validateSectionsPayload. Keep in sync.
+const ALL_SECTIONS: ReadonlyArray<MemorySectionName> = [
+  "soul",
+  "long_term",
+  "daily",
+  "dedup_state",
+  "relationships",
+  "shared",
+  "runtime_meta",
+];
+const ARRAY_SECTIONS: ReadonlySet<MemorySectionName> = new Set([
+  "daily",
+  "relationships",
+]);
+const VALID_VISIBILITIES: ReadonlySet<MemoryVisibility> = new Set([
+  "private",
+  "pod",
+  "public",
+]);
 
 const ACPX_BIN_CANDIDATES = [
   "/app/node_modules/.pnpm/node_modules/.bin/acpx", // plugin-local install
@@ -365,7 +387,7 @@ export class CommonlyTools {
         name: "commonly_read_agent_memory",
         label: "Commonly Read Agent Memory",
         description:
-          "Read this agent's personal MEMORY.md, stored in the backend and persistent across sessions and gateway restarts. Call at the start of each heartbeat to load long-term context, recent post history, and any notes written in previous sessions.",
+          "Read this agent's personal MEMORY.md, stored in the backend and persistent across sessions and gateway restarts. Call at the start of each heartbeat to load long-term context, recent post history, and any notes written in previous sessions. Prefer `commonly_read_my_memory` for new code — this remains as a v1 wrapper.",
         parameters: Type.Object({}),
         async execute(_id: string, _params: Record<string, unknown>) {
           const result = await client.readAgentMemory();
@@ -376,7 +398,7 @@ export class CommonlyTools {
         name: "commonly_write_agent_memory",
         label: "Commonly Write Agent Memory",
         description:
-          "Write this agent's personal MEMORY.md. Overwrites the full content — always read first, update in memory, then write the complete updated string. Used to persist post history, learned context, and long-term notes.",
+          "Write this agent's personal MEMORY.md. Overwrites the full content — always read first, update in memory, then write the complete updated string. Used to persist post history, learned context, and long-term notes. Prefer `commonly_save_my_memory` for new code — this remains as a v1 wrapper.",
         parameters: Type.Object({
           content: Type.String({ description: "Full updated content of the agent's MEMORY.md" }),
         }),
@@ -384,6 +406,138 @@ export class CommonlyTools {
           const content = readStringParam(params, "content", { required: true });
           await client.writeAgentMemory(content);
           return jsonResult({ ok: true });
+        },
+      },
+      {
+        name: "commonly_read_my_memory",
+        label: "Commonly Read My Memory",
+        description:
+          "ADR-003 Phase 2: read this agent's typed memory envelope (soul, long_term, daily, dedup_state, relationships, shared, runtime_meta). Returns the full envelope by default, or one section when `section` is provided. Private by default; other agents cannot read this via this tool. The top-level `content` field is the v1 blob; post-backfill it mirrors `sections.long_term.content`. Prefer `sections.*` for new code.",
+        parameters: Type.Object({
+          section: Type.Optional(
+            Type.String({
+              description:
+                "Optional section name: soul | long_term | daily | dedup_state | relationships | shared | runtime_meta",
+            }),
+          ),
+        }),
+        async execute(_id: string, params: Record<string, unknown>) {
+          const section = readStringParam(params, "section");
+          if (section !== undefined && !ALL_SECTIONS.includes(section as MemorySectionName)) {
+            return jsonResult({
+              ok: false,
+              error: `unknown section "${section}" (valid: ${ALL_SECTIONS.join(", ")})`,
+            });
+          }
+          const envelope = await client.readAgentMemory();
+          if (!section) {
+            return jsonResult({
+              ok: true,
+              content: envelope.content ?? "",
+              sections: envelope.sections ?? {},
+              sourceRuntime: envelope.sourceRuntime,
+              schemaVersion: envelope.schemaVersion,
+            });
+          }
+          const key = section as MemorySectionName;
+          const value = envelope.sections?.[key];
+          return jsonResult({ ok: true, section: key, value: value ?? null });
+        },
+      },
+      {
+        name: "commonly_save_my_memory",
+        label: "Commonly Save My Memory",
+        description:
+          "ADR-003 Phase 2: write ONE section of this agent's memory envelope. Uses patch-mode sync: siblings are preserved; daily entries merge by date; relationships merge by otherInstanceId. byteSize + updatedAt are server-stamped. For `daily`/`relationships` pass the `entries` array; for single-object sections pass `content` (and optional `visibility`). Do not pass both `entries` and `content` in the same call. Prefer this over commonly_write_agent_memory going forward.",
+        parameters: Type.Object({
+          section: Type.String({
+            description:
+              "Section to write: soul | long_term | daily | dedup_state | relationships | shared | runtime_meta",
+          }),
+          content: Type.Optional(
+            Type.String({
+              description:
+                "For single-object sections (soul, long_term, dedup_state, shared, runtime_meta): the markdown content to store.",
+            }),
+          ),
+          visibility: Type.Optional(
+            Type.String({
+              description:
+                "For single-object sections: private | pod | public. Tool defaults to private (ADR-003 invariant #2).",
+            }),
+          ),
+          entries: Type.Optional(
+            Type.Array(Type.Unknown(), {
+              description:
+                "For array sections only. daily[] = {date:'YYYY-MM-DD', content, visibility?}. relationships[] = {otherInstanceId, notes?, visibility?}. Shape is validated server-side.",
+            }),
+          ),
+        }),
+        async execute(_id: string, params: Record<string, unknown>) {
+          const sectionParam = readStringParam(params, "section", { required: true });
+          if (!ALL_SECTIONS.includes(sectionParam as MemorySectionName)) {
+            return jsonResult({
+              ok: false,
+              error: `unknown section "${sectionParam}" (valid: ${ALL_SECTIONS.join(", ")})`,
+            });
+          }
+          const section = sectionParam as MemorySectionName;
+          const hasEntries = Array.isArray(params.entries);
+          const contentParam = readStringParam(params, "content");
+          // Reject conflicting payloads up-front — prevents silent drops.
+          if (hasEntries && contentParam !== undefined) {
+            return jsonResult({
+              ok: false,
+              error: "provide either `entries` (array sections) or `content` (single-object sections), not both",
+            });
+          }
+          let sectionsPayload: Record<string, unknown>;
+          if (ARRAY_SECTIONS.has(section)) {
+            if (!hasEntries) {
+              return jsonResult({
+                ok: false,
+                error: `section "${section}" requires an \`entries\` array`,
+              });
+            }
+            sectionsPayload = { [section]: params.entries };
+          } else {
+            if (contentParam === undefined) {
+              return jsonResult({
+                ok: false,
+                error: `section "${section}" requires \`content\``,
+              });
+            }
+            // Default to private on the wire — tool-level enforcement of
+            // ADR-003 invariant #2, independent of backend defaulting.
+            const rawVis = readStringParam(params, "visibility") ?? "private";
+            if (!VALID_VISIBILITIES.has(rawVis as MemoryVisibility)) {
+              return jsonResult({
+                ok: false,
+                error: `visibility "${rawVis}" must be one of private | pod | public`,
+              });
+            }
+            sectionsPayload = {
+              [section]: { content: contentParam, visibility: rawVis },
+            };
+          }
+          try {
+            // sourceRuntime hardcoded because this extension IS the openclaw driver.
+            const result = await client.syncAgentMemory(sectionsPayload, {
+              mode: "patch",
+              sourceRuntime: "openclaw",
+            });
+            return jsonResult({
+              ok: true,
+              section,
+              deduped: result.deduped ?? false,
+              schemaVersion: result.schemaVersion,
+            });
+          } catch (err: unknown) {
+            // Convert kernel 4xx into a structured tool failure so models
+            // cope with a clean { ok:false, error } instead of a thrown tool.
+            const msg = err instanceof Error ? err.message : String(err);
+            return jsonResult({ ok: false, error: `kernel rejected: ${msg}` });
+          }
         },
       },
       {

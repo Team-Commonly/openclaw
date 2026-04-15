@@ -12,6 +12,43 @@ export interface CommonlyClientConfig {
   instanceId?: string;
 }
 
+// ADR-003 Phase 2: envelope types for /memory/sync. The kernel stores these
+// shapes verbatim; drivers treat the schema as opaque beyond their section(s).
+export type MemoryVisibility = 'private' | 'pod' | 'public';
+
+export interface MemorySection {
+  content: string;
+  visibility?: MemoryVisibility;
+  // byteSize + updatedAt are server-stamped — safe to omit on write.
+  byteSize?: number;
+  updatedAt?: string;
+}
+
+export interface DailySection {
+  date: string; // YYYY-MM-DD
+  content: string;
+  visibility?: MemoryVisibility;
+}
+
+export interface RelationshipNote {
+  otherInstanceId: string;
+  notes?: string;
+  visibility?: MemoryVisibility;
+  updatedAt?: string;
+}
+
+export interface AgentMemorySections {
+  soul?: MemorySection;
+  long_term?: MemorySection;
+  daily?: DailySection[];
+  dedup_state?: MemorySection;
+  relationships?: RelationshipNote[];
+  shared?: MemorySection;
+  runtime_meta?: MemorySection;
+}
+
+export type MemorySectionName = keyof AgentMemorySections;
+
 export interface PodContext {
   pod?: {
     name: string;
@@ -394,8 +431,18 @@ export class CommonlyClient {
 
   /**
    * Read this agent's personal MEMORY.md (stored in backend, persistent across sessions)
+   *
+   * ADR-003 Phase 1: GET /memory returns both the v1 `content` blob and the
+   * v2 `sections` envelope (if populated). v1 callers use `.content`; v2
+   * callers use `.sections`. Note: post-backfill, `content` mirrors
+   * `sections.long_term.content` — prefer the v2 path for new code.
    */
-  async readAgentMemory(): Promise<{ content: string }> {
+  async readAgentMemory(): Promise<{
+    content: string;
+    sections?: AgentMemorySections;
+    sourceRuntime?: string;
+    schemaVersion?: number;
+  }> {
     const res = await fetch(`${this.config.baseUrl}/api/agents/runtime/memory`, {
       headers: this.runtimeHeaders,
     });
@@ -404,7 +451,7 @@ export class CommonlyClient {
   }
 
   /**
-   * Write this agent's personal MEMORY.md (overwrites full content)
+   * Write this agent's personal MEMORY.md (v1; overwrites full content)
    */
   async writeAgentMemory(content: string): Promise<void> {
     const res = await fetch(`${this.config.baseUrl}/api/agents/runtime/memory`, {
@@ -413,6 +460,35 @@ export class CommonlyClient {
       body: JSON.stringify({ content }),
     });
     if (!res.ok) throw new Error(`Failed to write agent memory: ${res.status}`);
+  }
+
+  /**
+   * ADR-003 Phase 2: promote an agent's memory envelope via the kernel sync
+   * endpoint. `mode: 'patch'` merges per-section (single-object sections
+   * $set per-key; daily by date; relationships by otherInstanceId).
+   * `mode: 'full'` replaces the entire sections envelope.
+   *
+   * Identical payloads within the same UTC day collapse to one write;
+   * response `deduped: true` means the kernel skipped the update.
+   */
+  async syncAgentMemory(
+    sections: AgentMemorySections,
+    options: { mode: 'full' | 'patch'; sourceRuntime?: string },
+  ): Promise<{ ok: true; deduped?: boolean; schemaVersion?: number; version?: number }> {
+    const res = await fetch(`${this.config.baseUrl}/api/agents/runtime/memory/sync`, {
+      method: 'POST',
+      headers: this.runtimeHeaders,
+      body: JSON.stringify({
+        sections,
+        mode: options.mode,
+        ...(options.sourceRuntime !== undefined ? { sourceRuntime: options.sourceRuntime } : {}),
+      }),
+    });
+    if (!res.ok) {
+      const msg = await res.text().catch(() => '');
+      throw new Error(`Failed to sync agent memory: ${res.status} ${msg}`);
+    }
+    return res.json();
   }
 
   /**
