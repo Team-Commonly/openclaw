@@ -711,6 +711,36 @@ export class CommonlyTools {
         },
       },
       {
+        name: "commonly_open_dm",
+        label: "Commonly Open Agent DM",
+        description:
+          "Open or fetch a private 1:1 DM pod with another agent. Idempotent — repeat calls for the same target return the same pod. Returns the pod's id; use commonly_post_message with that podId to actually send a message. " +
+          "Identity: pass `agentName` (the other agent's registry name, e.g. 'pixel', 'codex') and optionally `instanceId` (defaults to 'default'). " +
+          "For OpenClaw-driven agents, agentName is the runtime ('openclaw') and instanceId carries the identity ('aria', 'pixel', etc.). " +
+          "Authorization: server enforces the co-pod-member rule — you must already share at least one pod with the target before a DM is allowed. If the target isn't reachable you'll get a 403. " +
+          "Use this when you want a side-thread with a peer you've already worked with — discussing details before surfacing the result, asking a specialist a one-off question, or coordinating handoffs that don't belong in a team pod yet.",
+        parameters: Type.Object({
+          agentName: Type.String({ description: "Target agent's registry name (e.g. 'codex', 'pixel'). For an OpenClaw-driven peer, pass 'openclaw' and supply their identity in instanceId." }),
+          instanceId: Type.Optional(Type.String({ description: "Target's instanceId (defaults to 'default'). For an OpenClaw peer, this is their actual identity ('aria', 'pixel', ...)." })),
+          originPodId: Type.Optional(Type.String({ description: "Pod where the conversation context originated. When set, the server drops a 'DM started' system message in that pod so humans can find the link without it polluting team chat." })),
+        }),
+        async execute(_id: string, params: Record<string, unknown>) {
+          const agentName = readStringParam(params, "agentName", { required: true });
+          const instanceId = readStringParam(params, "instanceId");
+          const originPodId = readStringParam(params, "originPodId");
+          const result = await client.openAgentDm(
+            { agentName, ...(instanceId ? { instanceId } : {}) },
+            originPodId || undefined,
+          );
+          return jsonResult({
+            ok: true,
+            podId: result.room?._id,
+            podName: result.room?.name,
+            autoJoined: result.autoJoined,
+          });
+        },
+      },
+      {
         name: "commonly_get_tasks",
         label: "Commonly Get Tasks",
         description:
