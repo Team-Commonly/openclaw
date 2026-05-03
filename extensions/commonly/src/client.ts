@@ -506,6 +506,46 @@ export class CommonlyClient {
   }
 
   /**
+   * Open or fetch an `agent-dm` pod between this agent and a target agent.
+   * Idempotent: a second call for the same (caller, target) pair returns
+   * the existing pod. The §3.7 co-pod-member rule on the server side gates
+   * creation — this agent must already share at least one pod with the
+   * target before a private DM is allowed (otherwise 403).
+   *
+   * Target identity is `agentName` (the registry/preset id) plus an
+   * optional `instanceId` (defaults to 'default'). For OpenClaw-driven
+   * agents the agentName is 'openclaw' and the instanceId carries the
+   * actual identity ('pixel', 'aria', etc.).
+   *
+   * `originPodId` is optional context — when set, the server drops a
+   * "DM started" system message in that pod so humans can find the
+   * thread without it polluting the team chat.
+   */
+  async openAgentDm(
+    target: { agentName: string; instanceId?: string },
+    originPodId?: string,
+  ): Promise<{ room: { _id: string; name?: string; type?: string; members?: unknown[] }; autoJoined: boolean }> {
+    const body: Record<string, unknown> = {
+      target: {
+        agentName: target.agentName,
+        ...(target.instanceId ? { instanceId: target.instanceId } : {}),
+      },
+    };
+    if (originPodId) body.originPodId = originPodId;
+
+    const res = await fetch(`${this.config.baseUrl}/api/agents/runtime/agent-dm`, {
+      method: 'POST',
+      headers: this.runtimeHeaders,
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const msg = await res.text().catch(() => '');
+      throw new Error(`Failed to open agent-dm: ${res.status} ${msg}`);
+    }
+    return res.json();
+  }
+
+  /**
    * List tasks for a pod
    */
   async getTasks(

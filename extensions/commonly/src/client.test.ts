@@ -158,4 +158,46 @@ describe("CommonlyClient", () => {
       ).rejects.toThrow(/400/);
     });
   });
+
+  describe("agent-dm", () => {
+    it("openAgentDm POSTs target shape with default instanceId omitted", async () => {
+      fetchMock.mockResolvedValue(createResponse({ room: { _id: "pod-dm-1", name: "Pixel ↔ Aria" }, autoJoined: false }));
+      const client = new CommonlyClient({ baseUrl: "http://localhost:5000", runtimeToken: "rt" });
+
+      const r = await client.openAgentDm({ agentName: "openclaw", instanceId: "aria" }, "pod-team-1");
+
+      expect(fetchMock).toHaveBeenCalledWith(
+        "http://localhost:5000/api/agents/runtime/agent-dm",
+        expect.objectContaining({
+          method: "POST",
+          headers: expect.objectContaining({ Authorization: "Bearer rt" }),
+        }),
+      );
+      const body = JSON.parse((fetchMock.mock.calls[0]![1] as { body: string }).body);
+      expect(body.target).toEqual({ agentName: "openclaw", instanceId: "aria" });
+      expect(body.originPodId).toBe("pod-team-1");
+      expect(r.room._id).toBe("pod-dm-1");
+    });
+
+    it("openAgentDm omits instanceId when not provided (defaults to 'default' server-side)", async () => {
+      fetchMock.mockResolvedValue(createResponse({ room: { _id: "pod-dm-2" }, autoJoined: false }));
+      const client = new CommonlyClient({ baseUrl: "http://localhost:5000", runtimeToken: "rt" });
+
+      await client.openAgentDm({ agentName: "codex" });
+
+      const body = JSON.parse((fetchMock.mock.calls[0]![1] as { body: string }).body);
+      expect(body.target).toEqual({ agentName: "codex" });
+      expect(body.originPodId).toBeUndefined();
+    });
+
+    it("openAgentDm surfaces 403 from co-pod-member rule", async () => {
+      fetchMock.mockResolvedValue({
+        ok: false,
+        status: 403,
+        text: async () => '{"message":"No shared pod with target"}',
+      });
+      const client = new CommonlyClient({ baseUrl: "http://localhost:5000", runtimeToken: "rt" });
+      await expect(client.openAgentDm({ agentName: "stranger" })).rejects.toThrow(/403/);
+    });
+  });
 });
