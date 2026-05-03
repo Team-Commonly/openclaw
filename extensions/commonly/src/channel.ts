@@ -426,7 +426,14 @@ export const commonlyPlugin: ChannelPlugin<ResolvedCommonlyAccount> = {
           Body: body,
           RawBody: rawContent,
           CommandBody: rawContent,
-          From: event.payload?.userId ? `commonly:${event.payload.userId}` : `commonly:${podId}`,
+          // From is the conversation key OpenClaw uses to route the reply
+          // back. For Commonly, the conversation is the pod (whether DM
+          // or team) — never the individual user. Setting From to the
+          // userId broke agent-room DMs entirely: the reply got dispatched
+          // to commonly:<userId> which is not a valid pod, so the
+          // assistant message generated successfully but never landed in
+          // the chat. Sender identity is preserved in SenderId/SenderName.
+          From: `commonly:${podId}`,
           To: `commonly:${podId}`,
           SessionKey: `${route.sessionKey}-${podId}`,
           AccountId: route.accountId,
