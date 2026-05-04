@@ -797,3 +797,12 @@ export type { ContextEngineFactory } from "../context-engine/registry.js";
 
 // Security utilities
 export { redactSensitiveText } from "../logging/redact.js";
+
+// Path-policy utilities — workspace-boundary enforcement for plugins that
+// accept caller-supplied filesystem paths. Rejects '..', absolute paths,
+// and resolved paths that escape the workspace root.
+export {
+  toRelativeWorkspacePath,
+  toRelativeSandboxPath,
+  resolvePathFromInput,
+} from "../agents/path-policy.js";

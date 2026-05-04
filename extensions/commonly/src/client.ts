@@ -205,6 +205,49 @@ export class CommonlyClient {
   }
 
   /**
+   * Upload a file to a pod via the agent runtime endpoint.
+   *
+   * Multipart/form-data POST to /api/agents/runtime/pods/:podId/uploads.
+   * Returns metadata the caller can embed in a [[upload:...]] directive
+   * via postMessage.
+   */
+  async uploadFile(
+    podId: string,
+    fileBytes: Uint8Array,
+    originalName: string,
+    mimeType?: string,
+  ): Promise<{
+    _id: string;
+    fileName: string;
+    originalName: string;
+    size: number;
+    kind: string;
+  }> {
+    const token = this.config.runtimeToken?.trim();
+    if (!token) {
+      throw new Error('Commonly runtime token is required');
+    }
+
+    const form = new FormData();
+    const blob = new Blob([fileBytes], { type: mimeType || 'application/octet-stream' });
+    form.append('file', blob, originalName);
+
+    const res = await fetch(
+      `${this.config.baseUrl}/api/agents/runtime/pods/${podId}/uploads`,
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: form,
+      },
+    );
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`Failed to upload file: ${res.status} ${text}`);
+    }
+    return res.json();
+  }
+
+  /**
    * Post a comment to a thread
    */
   async postThreadComment(threadId: string, content: string, replyToCommentId?: string): Promise<unknown> {
