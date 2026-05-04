@@ -202,6 +202,60 @@ RUN if [ -n "$OPENCLAW_INSTALL_GH_CLI" ]; then \
       rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*; \
     fi
 
+# Optional: install document-generation toolchain for the commonly extension's
+# commonly_attach_file flow. Adds ~170MB total. Build with:
+#   --build-arg OPENCLAW_INSTALL_DOC_TOOLCHAIN=1
+# Includes:
+#   - OfficeCLI (iOfficeAI, Apache-2.0): single ~30MB static binary for
+#     DOCX/XLSX/PPTX create + edit + validate, LLM-optimized addressing.
+#     Pinned to OPENCLAW_OFFICECLI_VERSION; SHA256 verified against the
+#     SHA256SUMS artifact published on the release.
+#   - pandoc + texlive-xetex + texlive-fonts-recommended (~80MB): md → PDF
+#     via LaTeX engine, md → simple DOCX fallback.
+#   - poppler-utils: pdftoppm / pdftotext for PDF-skill workflows.
+#   - python3 + pip + markitdown + pypdf: parse direction (binary doc → md
+#     for agent input).
+ARG OPENCLAW_INSTALL_DOC_TOOLCHAIN=""
+ARG OPENCLAW_OFFICECLI_VERSION="1.0.70"
+RUN if [ -n "$OPENCLAW_INSTALL_DOC_TOOLCHAIN" ]; then \
+      apt-get update && \
+      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ca-certificates curl \
+        pandoc texlive-xetex texlive-fonts-recommended \
+        poppler-utils python3 python3-pip && \
+      apt-get clean && \
+      rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* && \
+      \
+      # OfficeCLI: download pinned binary, verify SHA256 against the
+      # release's SHA256SUMS artifact, install to /usr/local/bin.
+      ARCH="$(uname -m)" && \
+      case "$ARCH" in \
+        x86_64)  ASSET="officecli-linux-x64" ;; \
+        aarch64) ASSET="officecli-linux-arm64" ;; \
+        *) echo "Unsupported architecture for OfficeCLI: $ARCH" >&2; exit 1 ;; \
+      esac && \
+      RELEASE_URL="https://github.com/iOfficeAI/OfficeCLI/releases/download/v${OPENCLAW_OFFICECLI_VERSION}" && \
+      curl -fsSL "${RELEASE_URL}/${ASSET}" -o /usr/local/bin/officecli && \
+      curl -fsSL "${RELEASE_URL}/SHA256SUMS" -o /tmp/officecli-SHA256SUMS && \
+      ( cd /usr/local/bin && \
+        EXPECTED="$(grep " ${ASSET}\$" /tmp/officecli-SHA256SUMS | awk '{print $1}')" && \
+        if [ -z "$EXPECTED" ]; then echo "OfficeCLI SHA256 not found for ${ASSET}" >&2; exit 1; fi && \
+        echo "${EXPECTED}  officecli" | sha256sum -c - ) && \
+      rm -f /tmp/officecli-SHA256SUMS && \
+      chmod +x /usr/local/bin/officecli && \
+      \
+      # Python parse-direction utilities. --break-system-packages is required
+      # on Debian Bookworm's PEP-668-protected system Python.
+      pip3 install --break-system-packages --no-cache-dir \
+        markitdown pypdf && \
+      \
+      # Self-test the toolchain so a regression (lost binary, broken pip)
+      # surfaces at build time, not at agent runtime via "command not found".
+      officecli --version && \
+      pandoc --version | head -1 && \
+      python3 -c "import markitdown, pypdf; print('parse-direction OK')"; \
+    fi
+
 # Normalize extension paths so plugin safety checks do not reject
 # world-writable directories inherited from source file modes.
 RUN for dir in /app/extensions /app/.agent /app/.agents; do \
