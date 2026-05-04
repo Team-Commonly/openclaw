@@ -8,10 +8,44 @@ import {
   jsonResult,
   readNumberParam,
   readStringParam,
+  toRelativeWorkspacePath,
 } from "openclaw/plugin-sdk";
 
 import { parseInlineDirectives } from "./directive-tags.js";
 import type { MemorySectionName, MemoryVisibility } from "./client.js";
+
+// MIME detection for commonly_attach_file. Backend validates against the
+// ADR-002 allowlist; this is a best-effort hint based on extension.
+const MIME_BY_EXT: Record<string, string> = {
+  pdf: "application/pdf",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  doc: "application/msword",
+  xls: "application/vnd.ms-excel",
+  ppt: "application/vnd.ms-powerpoint",
+  csv: "text/csv",
+  tsv: "text/tab-separated-values",
+  txt: "text/plain",
+  md: "text/markdown",
+  json: "application/json",
+  yaml: "application/x-yaml",
+  yml: "application/x-yaml",
+  html: "text/html",
+  xml: "application/xml",
+  svg: "image/svg+xml",
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+};
+
+function detectMimeFromPath(filePath: string): string | undefined {
+  const dot = filePath.lastIndexOf(".");
+  if (dot === -1 || dot === filePath.length - 1) return undefined;
+  return MIME_BY_EXT[filePath.slice(dot + 1).toLowerCase()];
+}
 
 // ADR-003 Phase 2 section taxonomy — mirrors the backend validator in
 // backend/routes/agentsRuntime.ts validateSectionsPayload. Keep in sync.
@@ -334,6 +368,97 @@ export class CommonlyTools {
           const replyToId = explicitReplyTo || parsed.replyToId;
           const result = await client.postMessage(podId, content, {}, replyToId);
           return jsonResult({ ok: true, message: result });
+        },
+      },
+      {
+        name: "commonly_attach_file",
+        label: "Commonly Attach File",
+        description:
+          "Attach a file from your workspace to pod chat. Use after producing a deliverable (PDF, DOCX, XLSX, PPTX, CSV, MD, image). " +
+          "Reads the file from /workspace/<accountId>/<filePath>, uploads it via the runtime upload endpoint, and posts a chat message " +
+          "with an inline [[upload:...]] directive that the recipient renders as a clickable preview pill. " +
+          "Examples: after `pandoc input.md -o report.pdf`, call commonly_attach_file({ podId, filePath: 'report.pdf', message: 'Q1 brief attached.' }). " +
+          "After `officecli create deck.pptx && officecli add ...`, call commonly_attach_file({ podId, filePath: 'deck.pptx', message: 'Stakeholder deck.' }). " +
+          "Path must stay inside the agent workspace (no '..', no symlinks pointing outside) — escape attempts are rejected. " +
+          "Max file size 25 MB. If `message` is omitted, returns file metadata so you can compose your own message.",
+        parameters: Type.Object({
+          podId: Type.String({ description: "Pod ID to post the attachment into." }),
+          filePath: Type.String({
+            description:
+              "File path relative to the agent's workspace root (e.g. 'report.pdf' or 'output/deck.pptx'). Must not escape the workspace.",
+          }),
+          message: Type.Optional(
+            Type.String({
+              description:
+                "Optional caption text. If provided, a chat message is posted with the caption followed by the upload directive. If omitted, returns file metadata for the caller to compose its own message.",
+            }),
+          ),
+          replyToId: Type.Optional(
+            Type.String({ description: "Optional message ID to reply to (creates a threaded reply)." }),
+          ),
+        }),
+        async execute(_id: string, params: Record<string, unknown>) {
+          const podId = readStringParam(params, "podId", { required: true });
+          const filePath = readStringParam(params, "filePath", { required: true });
+          const caption = readStringParam(params, "message");
+          const replyToId = readStringParam(params, "replyToId") || undefined;
+
+          // Workspace boundary: validate the path stays inside /workspace/<accountId>/
+          // before reading any bytes. Uses the same plugin-sdk helper that path-policy
+          // exposes for boundary enforcement.
+          const accountId = process.env.OPENCLAW_ACCOUNT_ID || "default";
+          const workspaceRoot = `/workspace/${accountId}`;
+          let safeRelative: string;
+          try {
+            safeRelative = toRelativeWorkspacePath(workspaceRoot, filePath);
+          } catch (err) {
+            throw new Error(
+              `commonly_attach_file: workspace boundary violation — ${(err as Error).message}`,
+            );
+          }
+          const absolutePath = `${workspaceRoot}/${safeRelative}`;
+
+          // Read bytes (size cap enforced before upload).
+          const MAX_BYTES = 25 * 1024 * 1024;
+          let bytes: Buffer;
+          try {
+            bytes = readFileSync(absolutePath);
+          } catch (err) {
+            throw new Error(
+              `commonly_attach_file: cannot read file at '${filePath}' — ${(err as Error).message}`,
+            );
+          }
+          if (bytes.length > MAX_BYTES) {
+            throw new Error(
+              `commonly_attach_file: file size ${bytes.length} bytes exceeds 25 MB limit`,
+            );
+          }
+
+          // Detect MIME from extension. Server validates against the allowlist.
+          const mimeType = detectMimeFromPath(safeRelative);
+          const originalName = safeRelative.split("/").pop() || safeRelative;
+
+          // Upload, then optionally post the directive in a chat message.
+          const uploaded = await client.uploadFile(
+            podId,
+            new Uint8Array(bytes),
+            originalName,
+            mimeType,
+          );
+
+          if (caption !== undefined && caption !== "") {
+            const directive = `[[upload:${uploaded.fileName}|${uploaded.originalName}|${uploaded.size}|${uploaded.kind}|${uploaded._id}]]`;
+            const content = `${caption}\n${directive}`;
+            const result = await client.postMessage(podId, content, {}, replyToId);
+            return jsonResult({ ok: true, file: uploaded, message: result });
+          }
+
+          // Caller composes its own message — return metadata + the ready-made directive.
+          return jsonResult({
+            ok: true,
+            file: uploaded,
+            directive: `[[upload:${uploaded.fileName}|${uploaded.originalName}|${uploaded.size}|${uploaded.kind}|${uploaded._id}]]`,
+          });
         },
       },
       {
