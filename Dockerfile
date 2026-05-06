@@ -221,7 +221,7 @@ RUN if [ -n "$OPENCLAW_INSTALL_DOC_TOOLCHAIN" ]; then \
       apt-get update && \
       DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         ca-certificates curl \
-        pandoc texlive-xetex texlive-fonts-recommended \
+        pandoc texlive-xetex texlive-fonts-recommended lmodern \
         poppler-utils python3 python3-pip && \
       apt-get clean && \
       rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* && \
@@ -249,11 +249,16 @@ RUN if [ -n "$OPENCLAW_INSTALL_DOC_TOOLCHAIN" ]; then \
       pip3 install --break-system-packages --no-cache-dir \
         markitdown pypdf && \
       \
-      # Self-test the toolchain so a regression (lost binary, broken pip)
-      # surfaces at build time, not at agent runtime via "command not found".
+      # Self-test the toolchain so a regression (lost binary, broken pip,
+      # missing LaTeX font package) surfaces at build time rather than at
+      # agent runtime via "command not found" or "lmodern.sty not found".
       officecli --version && \
       pandoc --version | head -1 && \
-      python3 -c "import markitdown, pypdf; print('parse-direction OK')"; \
+      python3 -c "import markitdown, pypdf; print('parse-direction OK')" && \
+      printf '# pandoc smoke test\n\nThis builds a real PDF.\n' > /tmp/pandoc-smoke.md && \
+      pandoc /tmp/pandoc-smoke.md -o /tmp/pandoc-smoke.pdf --pdf-engine=xelatex && \
+      test -s /tmp/pandoc-smoke.pdf && \
+      rm -f /tmp/pandoc-smoke.md /tmp/pandoc-smoke.pdf; \
     fi
 
 # Normalize extension paths so plugin safety checks do not reject
