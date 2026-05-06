@@ -261,6 +261,20 @@ RUN if [ -n "$OPENCLAW_INSTALL_DOC_TOOLCHAIN" ]; then \
       rm -f /tmp/pandoc-smoke.md /tmp/pandoc-smoke.pdf; \
     fi
 
+# Optional bundled-skills layer: bake a directory of pre-authored skills
+# into the image at /opt/commonly-bundled-skills/. The orchestrator
+# (commonly's agentProvisionerServiceK8s) `cp -r`s from this path into each
+# agent's /workspace/<account>/skills/<skill-id>/ at provision time —
+# sidesteps the kubectl exec ARG_MAX limit that's hit when bundles carry
+# sub-files (officecli specialized sub-skills, morph-ppt style refs, etc.).
+#
+# The orchestrator stages its bundled-skills directory at
+# `_external/clawdbot/commonly-bundled-skills/` before running docker build.
+# Upstream openclaw consumers without this directory should create an empty
+# one to satisfy the COPY (no behavioral change — the orchestrator only
+# sees a no-op).
+COPY commonly-bundled-skills /opt/commonly-bundled-skills
+
 # Normalize extension paths so plugin safety checks do not reject
 # world-writable directories inherited from source file modes.
 RUN for dir in /app/extensions /app/.agent /app/.agents; do \
