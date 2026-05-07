@@ -1,5 +1,14 @@
 import { spawn } from "node:child_process";
-import { accessSync, constants, readFileSync, writeFileSync } from "node:fs";
+import {
+  accessSync,
+  constants,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join as joinPath } from "node:path";
 
 import { Type } from "@sinclair/typebox";
 
@@ -458,6 +467,142 @@ export class CommonlyTools {
             ok: true,
             file: uploaded,
             directive: `[[upload:${uploaded.fileName}|${uploaded.originalName}|${uploaded.size}|${uploaded.kind}|${uploaded._id}]]`,
+          });
+        },
+      },
+      {
+        name: "commonly_read_attachment",
+        label: "Commonly Read Attachment",
+        description:
+          "Read a file attached in chat (the `fileName` from a [[upload:fileName|originalName|size|kind|id]] directive) and return its text content. " +
+          "Use when a user / teammate attaches a file you need to consume (briefs, specs, decks, datasets). " +
+          "Format-aware extraction: .docx/.xlsx/.pptx via `officecli view text`; .pdf via `pdftotext`; .md/.txt/.csv/.json/.html as raw text; everything else falls back to `markitdown`. " +
+          "Returns up to maxChars characters of extracted text (default 16000, max 64000) — truncates with a clear marker if longer. " +
+          "Requires the file to be in object storage (i.e. uploaded via the upload route). Eliminates the multi-step curl + extract dance you'd otherwise have to write inline.",
+        parameters: Type.Object({
+          fileName: Type.String({
+            description:
+              "ObjectStore key from the upload directive's first pipe-separated field (e.g. '1778103164116-632900841.docx'). NOT the human originalName — pass the literal fileName as it appears between `[[upload:` and the first `|`.",
+          }),
+          maxChars: Type.Optional(
+            Type.Number({
+              description: "Maximum characters of extracted text to return (default 16000, max 64000). Truncated output ends with a `[…truncated, N more chars]` marker.",
+            }),
+          ),
+        }),
+        async execute(_id: string, params: Record<string, unknown>) {
+          const fileName = readStringParam(params, "fileName", { required: true });
+          const requestedCap = readNumberParam(params, "maxChars");
+          const maxChars = Math.min(Math.max(requestedCap || 16000, 1000), 64000);
+
+          // Defense: only allow what looks like a real ObjectStore key
+          // (`<digits>-<digits>.<ext>`) so callers can't pass `../../etc/passwd`
+          // or arbitrary URL fragments. Backend would 404 anyway, but failing
+          // fast keeps the error message actionable.
+          if (!/^[a-zA-Z0-9_.-]+\.[a-zA-Z0-9]+$/.test(fileName) || fileName.includes("..")) {
+            throw new Error(
+              `commonly_read_attachment: invalid fileName '${fileName}' — expected the ObjectStore key from an [[upload:...]] directive`,
+            );
+          }
+
+          const baseUrl = process.env.COMMONLY_API_URL || "";
+          const token = process.env.COMMONLY_API_TOKEN || "";
+          if (!baseUrl) {
+            throw new Error("commonly_read_attachment: COMMONLY_API_URL not configured");
+          }
+
+          // Fetch the attachment. Public-read works today (ADR-002 Phase 1);
+          // sending the runtime token is defensive against the upcoming
+          // signed-URL flip — when reads require auth, this still works.
+          const url = `${baseUrl}/api/uploads/${encodeURIComponent(fileName)}`;
+          let res: Response;
+          try {
+            res = await fetch(url, {
+              headers: token ? { Authorization: `Bearer ${token}` } : {},
+            });
+          } catch (err) {
+            throw new Error(
+              `commonly_read_attachment: fetch failed — ${(err as Error).message}`,
+            );
+          }
+          if (!res.ok) {
+            throw new Error(
+              `commonly_read_attachment: server returned ${res.status} for '${fileName}'`,
+            );
+          }
+          const ab = await res.arrayBuffer();
+          const bytes = Buffer.from(ab);
+          // Hard cap at 25 MB to mirror the upload route — bigger uploads
+          // shouldn't exist, but if they do we don't want to OOM the gateway.
+          if (bytes.length > 25 * 1024 * 1024) {
+            throw new Error(
+              `commonly_read_attachment: file too large (${bytes.length} bytes; cap is 25 MB)`,
+            );
+          }
+
+          // Extract: write the bytes to a temp file (most extractors are
+          // file-based) and shell out. We deliberately don't try every
+          // possible extractor — a small switch on extension keeps the
+          // failure mode debuggable.
+          const ext = (fileName.split(".").pop() || "").toLowerCase();
+          const dir = mkdtempSync(joinPath(tmpdir(), "commonly-read-"));
+          const localPath = joinPath(dir, fileName);
+          let extracted = "";
+          let extractor = "raw";
+          try {
+            writeFileSync(localPath, bytes);
+            const runExtractor = (cmd: string, args: string[]): Promise<string> =>
+              new Promise((resolve, reject) => {
+                const child = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
+                let out = "";
+                let errOut = "";
+                child.stdout.on("data", (b) => { out += b.toString("utf8"); });
+                child.stderr.on("data", (b) => { errOut += b.toString("utf8"); });
+                child.on("error", reject);
+                child.on("close", (code) => {
+                  if (code === 0) resolve(out);
+                  else reject(new Error(`${cmd} exited ${code}: ${errOut.slice(0, 400)}`));
+                });
+              });
+
+            if (ext === "docx" || ext === "xlsx" || ext === "pptx") {
+              extractor = "officecli";
+              extracted = await runExtractor("officecli", ["view", localPath, "text"]);
+            } else if (ext === "pdf") {
+              extractor = "pdftotext";
+              extracted = await runExtractor("pdftotext", ["-layout", "-q", localPath, "-"]);
+            } else if (
+              ext === "md" || ext === "txt" || ext === "csv" || ext === "json" ||
+              ext === "log" || ext === "yaml" || ext === "yml" || ext === "xml" ||
+              ext === "html" || ext === "htm"
+            ) {
+              extractor = "raw";
+              extracted = bytes.toString("utf8");
+            } else {
+              // Fallback: try markitdown — covers epub, audio transcripts,
+              // and oddball formats. If markitdown also fails the caller
+              // gets a clean error.
+              extractor = "markitdown";
+              extracted = await runExtractor("markitdown", [localPath]);
+            }
+          } finally {
+            try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+          }
+
+          const totalChars = extracted.length;
+          const truncated = totalChars > maxChars;
+          const text = truncated
+            ? `${extracted.slice(0, maxChars)}\n\n[…truncated, ${totalChars - maxChars} more chars]`
+            : extracted;
+
+          return jsonResult({
+            ok: true,
+            fileName,
+            extractor,
+            sizeBytes: bytes.length,
+            totalChars,
+            truncated,
+            text,
           });
         },
       },
