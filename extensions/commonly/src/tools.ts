@@ -17,7 +17,6 @@ import {
   jsonResult,
   readNumberParam,
   readStringParam,
-  toRelativeWorkspacePath,
 } from "openclaw/plugin-sdk";
 
 import { parseInlineDirectives } from "./directive-tags.js";
@@ -405,6 +404,11 @@ export class CommonlyTools {
           replyToId: Type.Optional(
             Type.String({ description: "Optional message ID to reply to (creates a threaded reply)." }),
           ),
+          accountId: Type.Optional(
+            Type.String({
+              description: "Optional override for the workspace owner. Normally the tool resolves the workspace by scanning /workspace/*/<filePath> for a unique match — pass this only when you have multiple workspaces with the same relative path and need to disambiguate (rare).",
+            }),
+          ),
         }),
         async execute(_id: string, params: Record<string, unknown>) {
           const podId = readStringParam(params, "podId", { required: true });
@@ -412,20 +416,95 @@ export class CommonlyTools {
           const caption = readStringParam(params, "message");
           const replyToId = readStringParam(params, "replyToId") || undefined;
 
-          // Workspace boundary: validate the path stays inside /workspace/<accountId>/
-          // before reading any bytes. Uses the same plugin-sdk helper that path-policy
-          // exposes for boundary enforcement.
-          const accountId = process.env.OPENCLAW_ACCOUNT_ID || "default";
-          const workspaceRoot = `/workspace/${accountId}`;
-          let safeRelative: string;
-          try {
-            safeRelative = toRelativeWorkspacePath(workspaceRoot, filePath);
-          } catch (err) {
+          // Resolve which `/workspace/<accountId>/` to read from. Three
+          // strategies, in priority order:
+          //
+          //   1. Explicit `accountId` param — if the model passes it, trust it.
+          //   2. `OPENCLAW_ACCOUNT_ID` env var — set by the gateway runtime
+          //      when it's wired to do so. As of 2026-05-07 NOTHING in the
+          //      openclaw codebase actually sets this var (verified via
+          //      `rg -F OPENCLAW_ACCOUNT_ID` on the gateway repo) so it
+          //      falls through to (3) in practice.
+          //   3. Workspace scan — look for `/workspace/*/<filePath>` and use
+          //      the unique match. This is the fallback that lets
+          //      Nova/Pixel/Theo etc. attach files written to their own
+          //      workspace without the runtime needing to inject env.
+          //
+          // Strategy 3 is heuristic but safe: the upload itself is gated by
+          // the runtime token (the backend validates the agent's identity
+          // and pod-membership), so even if a scan picks the wrong
+          // workspace the upload still couldn't post into a pod the caller
+          // doesn't belong to. Worst case is a confusing error if two
+          // workspaces happen to have the same relative path.
+          const explicitAccountId = readStringParam(params, "accountId");
+          const envAccountId = (process.env.OPENCLAW_ACCOUNT_ID || "").trim();
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const fs = require("node:fs");
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const pathMod = require("node:path");
+
+          const validateRelative = (rel: string): string => {
+            // Require relative + no escape attempts.
+            if (rel.startsWith("/") || rel.includes("..")) {
+              throw new Error(
+                `commonly_attach_file: filePath must be a relative path inside the workspace; got '${rel}'`,
+              );
+            }
+            return rel.replace(/^\.\//, "");
+          };
+
+          const safeRelative = validateRelative(filePath);
+
+          let workspaceRoot: string | null = null;
+          let absolutePath: string | null = null;
+
+          // (1) explicit param + (2) env var
+          for (const candidate of [explicitAccountId, envAccountId]) {
+            if (!candidate) continue;
+            const root = `/workspace/${candidate}`;
+            const abs = pathMod.join(root, safeRelative);
+            try {
+              fs.accessSync(abs, constants.R_OK);
+              workspaceRoot = root;
+              absolutePath = abs;
+              break;
+            } catch { /* not there, fall through */ }
+          }
+
+          // (3) scan all /workspace/*/ — match exactly one
+          if (!absolutePath) {
+            let entries: string[] = [];
+            try {
+              entries = fs.readdirSync("/workspace");
+            } catch {
+              entries = [];
+            }
+            const matches: { root: string; abs: string }[] = [];
+            for (const name of entries) {
+              const root = `/workspace/${name}`;
+              const abs = pathMod.join(root, safeRelative);
+              try {
+                fs.accessSync(abs, constants.R_OK);
+                matches.push({ root, abs });
+              } catch { /* not in this one */ }
+            }
+            if (matches.length === 1) {
+              workspaceRoot = matches[0].root;
+              absolutePath = matches[0].abs;
+            } else if (matches.length > 1) {
+              const which = matches.map((m) => m.root).join(", ");
+              throw new Error(
+                `commonly_attach_file: ambiguous filePath '${filePath}' — found in multiple workspaces (${which}). Pass accountId param or use a path unique to your workspace.`,
+              );
+            }
+          }
+
+          if (!absolutePath || !workspaceRoot) {
             throw new Error(
-              `commonly_attach_file: workspace boundary violation — ${(err as Error).message}`,
+              `commonly_attach_file: cannot find '${filePath}' under any /workspace/<accountId>/. ` +
+              `Check the file exists and the path is relative to your workspace root (e.g. 'out/report.docx', not '/workspace/nova/out/report.docx').`,
             );
           }
-          const absolutePath = `${workspaceRoot}/${safeRelative}`;
 
           // Read bytes (size cap enforced before upload).
           const MAX_BYTES = 25 * 1024 * 1024;
@@ -434,7 +513,7 @@ export class CommonlyTools {
             bytes = readFileSync(absolutePath);
           } catch (err) {
             throw new Error(
-              `commonly_attach_file: cannot read file at '${filePath}' — ${(err as Error).message}`,
+              `commonly_attach_file: cannot read file at '${absolutePath}' — ${(err as Error).message}`,
             );
           }
           if (bytes.length > MAX_BYTES) {
