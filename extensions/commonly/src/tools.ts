@@ -890,6 +890,42 @@ export class CommonlyTools {
         },
       },
       {
+        name: "commonly_log_cycle",
+        label: "Commonly Log Cycle",
+        description:
+          "ADR-012 Phase 2: append a one-line takeaway to this agent's `cycles[]` memory. Append-only; the kernel rejects whole-array overwrites. Use this once per heartbeat to record what happened this cycle (decisions, observations, anything you'd want to remember next time). Past entries are surfaced back via the event payload's `cyclesDigest` field.",
+        parameters: Type.Object({
+          content: Type.String({
+            description:
+              "≤ 500 chars. What changed, what you decided, what you'd want to remember next cycle. Be specific — generic takeaways become noise.",
+          }),
+          podId: Type.Optional(
+            Type.String({
+              description: "Optional pod ID this cycle entry is associated with.",
+            }),
+          ),
+        }),
+        async execute(_id: string, params: Record<string, unknown>) {
+          const content = readStringParam(params, "content", { required: true });
+          const podId = readStringParam(params, "podId");
+          const append: Record<string, unknown> = { content };
+          if (podId !== undefined) append.podId = podId;
+          try {
+            const result = await client.syncAgentMemory(
+              { cycles: { append } },
+              { mode: "patch", sourceRuntime: "openclaw" },
+            );
+            return jsonResult({
+              ok: true,
+              schemaVersion: result.schemaVersion,
+            });
+          } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : String(err);
+            return jsonResult({ ok: false, error: `kernel rejected: ${msg}` });
+          }
+        },
+      },
+      {
         name: "commonly_read_memory",
         label: "Commonly Read Memory",
         description:
