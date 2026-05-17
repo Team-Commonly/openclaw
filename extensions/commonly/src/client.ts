@@ -58,22 +58,22 @@ export class CommonlyClient {
   private get runtimeHeaders(): Record<string, string> {
     const token = this.config.runtimeToken?.trim();
     if (!token) {
-      throw new Error('Commonly runtime token is required');
+      throw new Error("Commonly runtime token is required");
     }
     return {
       Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
+      "Content-Type": "application/json",
     };
   }
 
   private get userHeaders(): Record<string, string> {
     const token = this.config.userToken?.trim() || this.config.runtimeToken?.trim();
     if (!token) {
-      throw new Error('Commonly user token is required');
+      throw new Error("Commonly user token is required");
     }
     return {
       Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
+      "Content-Type": "application/json",
     };
   }
 
@@ -95,7 +95,7 @@ export class CommonlyClient {
   async healthCheck(): Promise<boolean> {
     try {
       const res = await fetch(`${this.config.baseUrl}/api/health`, {
-        headers: { 'Content-Type': 'application/json' },
+        headers: { "Content-Type": "application/json" },
       });
       return res.ok;
     } catch {
@@ -108,8 +108,8 @@ export class CommonlyClient {
    */
   async fetchEvents(): Promise<unknown[]> {
     const url = new URL(`${this.config.baseUrl}/api/agents/runtime/events`);
-    url.searchParams.append('agentName', this.config.agentName || 'openclaw');
-    url.searchParams.append('instanceId', this.config.instanceId || 'default');
+    url.searchParams.append("agentName", this.config.agentName || "openclaw");
+    url.searchParams.append("instanceId", this.config.instanceId || "default");
 
     const res = await fetch(url.toString(), { headers: this.runtimeHeaders });
     if (!res.ok) {
@@ -123,13 +123,10 @@ export class CommonlyClient {
    * Acknowledge an event
    */
   async ackEvent(eventId: string): Promise<void> {
-    const res = await fetch(
-      `${this.config.baseUrl}/api/agents/runtime/events/${eventId}/ack`,
-      {
-        method: 'POST',
-        headers: this.runtimeHeaders,
-      },
-    );
+    const res = await fetch(`${this.config.baseUrl}/api/agents/runtime/events/${eventId}/ack`, {
+      method: "POST",
+      headers: this.runtimeHeaders,
+    });
     if (!res.ok) {
       throw new Error(`Failed to ack event: ${res.status}`);
     }
@@ -143,22 +140,19 @@ export class CommonlyClient {
     content: string,
     metadata: Record<string, unknown> = {},
   ): Promise<Message> {
-    const res = await fetch(
-      `${this.config.baseUrl}/api/agents/runtime/pods/${podId}/messages`,
-      {
-        method: 'POST',
-        headers: this.runtimeHeaders,
-        body: JSON.stringify({
-          content,
-          messageType: 'text',
-          metadata: {
-            ...metadata,
-            agentType: this.config.agentName,
-            instanceId: this.config.instanceId,
-          },
-        }),
-      },
-    );
+    const res = await fetch(`${this.config.baseUrl}/api/agents/runtime/pods/${podId}/messages`, {
+      method: "POST",
+      headers: this.runtimeHeaders,
+      body: JSON.stringify({
+        content,
+        messageType: "text",
+        metadata: {
+          ...metadata,
+          agentType: this.config.agentName,
+          instanceId: this.config.instanceId,
+        },
+      }),
+    });
     if (!res.ok) {
       throw new Error(`Failed to post message: ${res.status}`);
     }
@@ -166,15 +160,62 @@ export class CommonlyClient {
   }
 
   /**
+   * React to a chat message with an emoji AS the agent identity.
+   *
+   * Same endpoint humans hit. `dualAuth` in commonly/backend/routes/messages.ts
+   * accepts both human JWTs and runtime `cm_agent_*` tokens; the reaction
+   * controller (commonly/backend/controllers/reactionController.ts) gates
+   * agent callers via `AgentInstallation.findOne({ podId, installedBy:
+   * req.agentUser._id, status: 'active' })` then falls back to
+   * `Pod.members`. The same `messageReaction` Socket.io event fires for
+   * both human + agent paths, so observers see the badge land live.
+   *
+   * `remove=true` deletes a previously-added reaction OF THE SAME EMOJI;
+   * server expects emoji in the path component, hence the encodeURIComponent.
+   */
+  async reactToMessage(
+    messageId: string,
+    emoji: string,
+    options: { remove?: boolean } = {},
+  ): Promise<unknown> {
+    const base = `${this.config.baseUrl}/api/messages/${encodeURIComponent(messageId)}/reactions`;
+    if (options.remove) {
+      const res = await fetch(`${base}/${encodeURIComponent(emoji)}`, {
+        method: "DELETE",
+        headers: this.runtimeHeaders,
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`Failed to remove reaction: ${res.status} ${text}`);
+      }
+      return res.json().catch(() => ({ ok: true }));
+    }
+    const res = await fetch(base, {
+      method: "POST",
+      headers: this.runtimeHeaders,
+      body: JSON.stringify({ emoji }),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`Failed to react to message: ${res.status} ${text}`);
+    }
+    return res.json();
+  }
+
+  /**
    * Post a comment to a thread
    */
-  async postThreadComment(threadId: string, content: string, replyToCommentId?: string): Promise<unknown> {
+  async postThreadComment(
+    threadId: string,
+    content: string,
+    replyToCommentId?: string,
+  ): Promise<unknown> {
     const body: Record<string, unknown> = { content };
     if (replyToCommentId) body.replyToCommentId = replyToCommentId;
     const res = await fetch(
       `${this.config.baseUrl}/api/agents/runtime/threads/${threadId}/comments`,
       {
-        method: 'POST',
+        method: "POST",
         headers: this.runtimeHeaders,
         body: JSON.stringify(body),
       },
@@ -189,11 +230,9 @@ export class CommonlyClient {
    * Get assembled context for a pod
    */
   async getContext(podId: string, task?: string): Promise<PodContext | null> {
-    const url = new URL(
-      `${this.config.baseUrl}/api/agents/runtime/pods/${podId}/context`,
-    );
+    const url = new URL(`${this.config.baseUrl}/api/agents/runtime/pods/${podId}/context`);
     if (task) {
-      url.searchParams.append('task', task);
+      url.searchParams.append("task", task);
     }
 
     const res = await fetch(url.toString(), { headers: this.runtimeHeaders });
@@ -208,10 +247,8 @@ export class CommonlyClient {
    * Get recent messages for a pod
    */
   async getMessages(podId: string, limit = 10): Promise<Message[]> {
-    const url = new URL(
-      `${this.config.baseUrl}/api/agents/runtime/pods/${podId}/messages`,
-    );
-    url.searchParams.append('limit', limit.toString());
+    const url = new URL(`${this.config.baseUrl}/api/agents/runtime/pods/${podId}/messages`);
+    url.searchParams.append("limit", limit.toString());
 
     const res = await fetch(url.toString(), { headers: this.runtimeHeaders });
     if (!res.ok) {
@@ -227,7 +264,7 @@ export class CommonlyClient {
    */
   async listPods(limit = 20): Promise<unknown[]> {
     const url = new URL(`${this.config.baseUrl}/api/agents/runtime/pods`);
-    url.searchParams.append('limit', limit.toString());
+    url.searchParams.append("limit", limit.toString());
 
     const res = await fetch(url.toString(), { headers: this.runtimeHeaders });
     if (!res.ok) {
@@ -242,10 +279,8 @@ export class CommonlyClient {
    * Get recent posts in a pod with comment data
    */
   async getPosts(podId: string, limit = 5): Promise<unknown[]> {
-    const url = new URL(
-      `${this.config.baseUrl}/api/agents/runtime/pods/${podId}/posts`,
-    );
-    url.searchParams.append('limit', limit.toString());
+    const url = new URL(`${this.config.baseUrl}/api/agents/runtime/pods/${podId}/posts`);
+    url.searchParams.append("limit", limit.toString());
 
     const res = await fetch(url.toString(), { headers: this.runtimeHeaders });
     if (!res.ok) {
@@ -261,7 +296,7 @@ export class CommonlyClient {
    */
   async search(podId: string, query: string): Promise<unknown[]> {
     const url = new URL(`${this.config.baseUrl}/api/v1/search/${podId}`);
-    url.searchParams.append('q', query);
+    url.searchParams.append("q", query);
 
     const res = await fetch(url.toString(), { headers: this.userHeaders });
     if (!res.ok) {
@@ -275,13 +310,8 @@ export class CommonlyClient {
   /**
    * Read pod memory file
    */
-  async readMemory(
-    podId: string,
-    path: string,
-  ): Promise<{ content: string } | null> {
-    const url = new URL(
-      `${this.config.baseUrl}/api/v1/pods/${podId}/memory/${path}`,
-    );
+  async readMemory(podId: string, path: string): Promise<{ content: string } | null> {
+    const url = new URL(`${this.config.baseUrl}/api/v1/pods/${podId}/memory/${path}`);
 
     const res = await fetch(url.toString(), { headers: this.userHeaders });
     if (!res.ok) {
@@ -296,12 +326,12 @@ export class CommonlyClient {
    */
   async writeMemory(
     podId: string,
-    target: 'daily' | 'memory' | 'skill',
+    target: "daily" | "memory" | "skill",
     content: string,
     options: { tags?: string[]; source?: Record<string, unknown> } = {},
   ): Promise<unknown> {
     const res = await fetch(`${this.config.baseUrl}/api/v1/memory/${podId}`, {
-      method: 'POST',
+      method: "POST",
       headers: this.userHeaders,
       body: JSON.stringify({
         target,
@@ -327,10 +357,8 @@ export class CommonlyClient {
     podId: string,
     hours = 24,
   ): Promise<Array<{ content: string; createdAt: Date }>> {
-    const url = new URL(
-      `${this.config.baseUrl}/api/v1/pods/${podId}/summaries`,
-    );
-    url.searchParams.append('hours', hours.toString());
+    const url = new URL(`${this.config.baseUrl}/api/v1/pods/${podId}/summaries`);
+    url.searchParams.append("hours", hours.toString());
 
     const res = await fetch(url.toString(), { headers: this.userHeaders });
     if (!res.ok) {
@@ -346,11 +374,11 @@ export class CommonlyClient {
    */
   async createPod(
     name: string,
-    type: 'chat' | 'study' | 'games' | 'agent-ensemble' | 'agent-admin',
+    type: "chat" | "study" | "games" | "agent-ensemble" | "agent-admin",
     description?: string,
   ): Promise<{ _id: string; name: string; type: string }> {
     const res = await fetch(`${this.config.baseUrl}/api/agents/runtime/pods`, {
-      method: 'POST',
+      method: "POST",
       headers: this.runtimeHeaders,
       body: JSON.stringify({ name, type, description }),
     });
@@ -375,14 +403,14 @@ export class CommonlyClient {
     const body: Record<string, unknown> = {
       content,
       podId: options.podId,
-      category: options.category || 'General',
+      category: options.category || "General",
       tags: options.tags || [],
     };
     if (options.sourceUrl) {
-      body.source = { type: 'web', provider: 'web', url: options.sourceUrl };
+      body.source = { type: "web", provider: "web", url: options.sourceUrl };
     }
     const res = await fetch(`${this.config.baseUrl}/api/agents/runtime/posts`, {
-      method: 'POST',
+      method: "POST",
       headers: this.runtimeHeaders,
       body: JSON.stringify(body),
     });
@@ -406,7 +434,7 @@ export class CommonlyClient {
    */
   async writeAgentMemory(content: string): Promise<void> {
     const res = await fetch(`${this.config.baseUrl}/api/agents/runtime/memory`, {
-      method: 'PUT',
+      method: "PUT",
       headers: this.runtimeHeaders,
       body: JSON.stringify({ content }),
     });
@@ -416,11 +444,16 @@ export class CommonlyClient {
   /**
    * Self-install this agent into an agent-owned pod
    */
-  async selfInstall(podId: string): Promise<{ message: string; podId: string; alreadyInstalled?: boolean }> {
-    const res = await fetch(`${this.config.baseUrl}/api/agents/runtime/pods/${podId}/self-install`, {
-      method: 'POST',
-      headers: this.runtimeHeaders,
-    });
+  async selfInstall(
+    podId: string,
+  ): Promise<{ message: string; podId: string; alreadyInstalled?: boolean }> {
+    const res = await fetch(
+      `${this.config.baseUrl}/api/agents/runtime/pods/${podId}/self-install`,
+      {
+        method: "POST",
+        headers: this.runtimeHeaders,
+      },
+    );
     if (!res.ok) {
       throw new Error(`Failed to self-install into pod: ${res.status}`);
     }
@@ -435,8 +468,8 @@ export class CommonlyClient {
     params: { assignee?: string; status?: string } = {},
   ): Promise<Array<Record<string, unknown>>> {
     const url = new URL(`${this.config.baseUrl}/api/v1/tasks/${podId}`);
-    if (params.assignee) url.searchParams.append('assignee', params.assignee);
-    if (params.status) url.searchParams.append('status', params.status);
+    if (params.assignee) url.searchParams.append("assignee", params.assignee);
+    if (params.status) url.searchParams.append("status", params.status);
     const res = await fetch(url.toString(), { headers: this.userHeaders });
     if (!res.ok) {
       console.warn(`Failed to get tasks: ${res.status}`);
@@ -464,7 +497,7 @@ export class CommonlyClient {
     },
   ): Promise<Record<string, unknown>> {
     const res = await fetch(`${this.config.baseUrl}/api/v1/tasks/${podId}`, {
-      method: 'POST',
+      method: "POST",
       headers: this.userHeaders,
       body: JSON.stringify(data),
     });
@@ -479,13 +512,19 @@ export class CommonlyClient {
   async claimTask(
     podId: string,
     taskId: string,
-  ): Promise<{ task?: Record<string, unknown>; error?: string; claimedBy?: string; status?: string }> {
-    const res = await fetch(
-      `${this.config.baseUrl}/api/v1/tasks/${podId}/${taskId}/claim`,
-      { method: 'POST', headers: this.userHeaders },
-    );
+  ): Promise<{
+    task?: Record<string, unknown>;
+    error?: string;
+    claimedBy?: string;
+    status?: string;
+  }> {
+    const res = await fetch(`${this.config.baseUrl}/api/v1/tasks/${podId}/${taskId}/claim`, {
+      method: "POST",
+      headers: this.userHeaders,
+    });
     const data = await res.json();
-    if (res.status === 409) return { error: data.error, claimedBy: data.claimedBy, status: data.status };
+    if (res.status === 409)
+      return { error: data.error, claimedBy: data.claimedBy, status: data.status };
     if (!res.ok) throw new Error(`Failed to claim task: ${res.status}`);
     return { task: data.task };
   }
@@ -498,14 +537,11 @@ export class CommonlyClient {
     taskId: string,
     data: { prUrl?: string; notes?: string } = {},
   ): Promise<Record<string, unknown>> {
-    const res = await fetch(
-      `${this.config.baseUrl}/api/v1/tasks/${podId}/${taskId}/complete`,
-      {
-        method: 'POST',
-        headers: this.userHeaders,
-        body: JSON.stringify(data),
-      },
-    );
+    const res = await fetch(`${this.config.baseUrl}/api/v1/tasks/${podId}/${taskId}/complete`, {
+      method: "POST",
+      headers: this.userHeaders,
+      body: JSON.stringify(data),
+    });
     if (!res.ok) throw new Error(`Failed to complete task: ${res.status}`);
     const result = await res.json();
     return result.task;
@@ -519,14 +555,11 @@ export class CommonlyClient {
     taskId: string,
     text: string,
   ): Promise<Record<string, unknown>> {
-    const res = await fetch(
-      `${this.config.baseUrl}/api/v1/tasks/${podId}/${taskId}/updates`,
-      {
-        method: 'POST',
-        headers: this.userHeaders,
-        body: JSON.stringify({ text }),
-      },
-    );
+    const res = await fetch(`${this.config.baseUrl}/api/v1/tasks/${podId}/${taskId}/updates`, {
+      method: "POST",
+      headers: this.userHeaders,
+      body: JSON.stringify({ text }),
+    });
     if (!res.ok) throw new Error(`Failed to add task update: ${res.status}`);
     const result = await res.json();
     return result.task;
@@ -540,14 +573,11 @@ export class CommonlyClient {
     taskId: string,
     data: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
-    const res = await fetch(
-      `${this.config.baseUrl}/api/v1/tasks/${podId}/${taskId}`,
-      {
-        method: 'PATCH',
-        headers: this.userHeaders,
-        body: JSON.stringify(data),
-      },
-    );
+    const res = await fetch(`${this.config.baseUrl}/api/v1/tasks/${podId}/${taskId}`, {
+      method: "PATCH",
+      headers: this.userHeaders,
+      body: JSON.stringify(data),
+    });
     if (!res.ok) throw new Error(`Failed to update task: ${res.status}`);
     const result = await res.json();
     return result.task;
@@ -558,14 +588,18 @@ export class CommonlyClient {
   /**
    * List open GitHub issues (excludes pull requests).
    */
-  async listGithubIssues(
-    options?: { owner?: string; repo?: string; perPage?: number },
-  ): Promise<Array<{ number: number; title: string; body: string; url: string; labels: string[] }>> {
+  async listGithubIssues(options?: {
+    owner?: string;
+    repo?: string;
+    perPage?: number;
+  }): Promise<
+    Array<{ number: number; title: string; body: string; url: string; labels: string[] }>
+  > {
     const params = new URLSearchParams();
-    if (options?.owner) params.set('owner', options.owner);
-    if (options?.repo) params.set('repo', options.repo);
-    if (options?.perPage) params.set('per_page', String(options.perPage));
-    const qs = params.toString() ? `?${params.toString()}` : '';
+    if (options?.owner) params.set("owner", options.owner);
+    if (options?.repo) params.set("repo", options.repo);
+    if (options?.perPage) params.set("per_page", String(options.perPage));
+    const qs = params.toString() ? `?${params.toString()}` : "";
     const res = await fetch(`${this.config.baseUrl}/api/github/issues${qs}`, {
       headers: this.userHeaders,
     });
@@ -585,7 +619,7 @@ export class CommonlyClient {
     repo?: string;
   }): Promise<{ number: number; title: string; url: string }> {
     const res = await fetch(`${this.config.baseUrl}/api/github/issues`, {
-      method: 'POST',
+      method: "POST",
       headers: this.userHeaders,
       body: JSON.stringify(data),
     });
@@ -604,20 +638,17 @@ export class CommonlyClient {
     content: string,
     messageId?: string,
   ): Promise<unknown> {
-    const res = await fetch(
-      `${this.config.baseUrl}/api/pods/${podId}/ensemble/response`,
-      {
-        method: 'POST',
-        headers: this.runtimeHeaders,
-        body: JSON.stringify({
-          ensembleId,
-          agentType: this.config.agentName,
-          instanceId: this.config.instanceId,
-          content,
-          messageId,
-        }),
-      },
-    );
+    const res = await fetch(`${this.config.baseUrl}/api/pods/${podId}/ensemble/response`, {
+      method: "POST",
+      headers: this.runtimeHeaders,
+      body: JSON.stringify({
+        ensembleId,
+        agentType: this.config.agentName,
+        instanceId: this.config.instanceId,
+        content,
+        messageId,
+      }),
+    });
     if (!res.ok) {
       console.warn(`Failed to report ensemble response: ${res.status}`);
     }

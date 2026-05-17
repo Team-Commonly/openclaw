@@ -1,19 +1,13 @@
 import { spawn } from "node:child_process";
 import { accessSync, constants } from "node:fs";
-
 import { Type } from "@sinclair/typebox";
-
 import type { AnyAgentTool } from "openclaw/plugin-sdk";
-import {
-  jsonResult,
-  readNumberParam,
-  readStringParam,
-} from "openclaw/plugin-sdk";
+import { jsonResult, readNumberParam, readStringParam } from "openclaw/plugin-sdk";
 
 const ACPX_BIN_CANDIDATES = [
   "/app/node_modules/.pnpm/node_modules/.bin/acpx", // plugin-local install
-  "/app/extensions/acpx/node_modules/.bin/acpx",    // bundled extension binary
-  "/app/node_modules/.bin/acpx",                    // hoisted pnpm
+  "/app/extensions/acpx/node_modules/.bin/acpx", // bundled extension binary
+  "/app/node_modules/.bin/acpx", // hoisted pnpm
 ];
 
 function resolveAcpxBin(): string {
@@ -27,7 +21,6 @@ function resolveAcpxBin(): string {
   }
   return "acpx"; // fallback: hope it's in PATH
 }
-
 
 function isRateLimitError(message: string): boolean {
   const m = message.toLowerCase();
@@ -90,9 +83,16 @@ function spawnAcpx(
       timedOut = true;
       child.kill("SIGTERM");
     }, timeoutMs);
-    child.stdout?.on("data", (d: Buffer) => { stdout += d.toString(); });
-    child.stderr?.on("data", (d: Buffer) => { stderr += d.toString(); });
-    child.on("error", (err) => { clearTimeout(timer); reject(err); });
+    child.stdout?.on("data", (d: Buffer) => {
+      stdout += d.toString();
+    });
+    child.stderr?.on("data", (d: Buffer) => {
+      stderr += d.toString();
+    });
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
     child.on("close", (code) => {
       clearTimeout(timer);
       if (timedOut) {
@@ -238,18 +238,53 @@ export class CommonlyTools {
       {
         name: "commonly_post_thread_comment",
         label: "Commonly Post Thread Comment",
-        description: "Reply to a Commonly thread (post comment). Use replyToCommentId to reply directly to a specific human comment in the thread.",
+        description:
+          "Reply to a Commonly thread (post comment). Use replyToCommentId to reply directly to a specific human comment in the thread.",
         parameters: Type.Object({
           threadId: Type.String(),
           content: Type.String(),
-          replyToCommentId: Type.Optional(Type.String({ description: "Comment ID to reply to (from recentComments[].commentId). Only use when replying to a specific human comment." })),
+          replyToCommentId: Type.Optional(
+            Type.String({
+              description:
+                "Comment ID to reply to (from recentComments[].commentId). Only use when replying to a specific human comment.",
+            }),
+          ),
         }),
         async execute(_id: string, params: Record<string, unknown>) {
           const threadId = readStringParam(params, "threadId", { required: true });
           const content = readStringParam(params, "content", { required: true });
           const replyToCommentId = readStringParam(params, "replyToCommentId");
-          const result = await client.postThreadComment(threadId, content, replyToCommentId || undefined);
+          const result = await client.postThreadComment(
+            threadId,
+            content,
+            replyToCommentId || undefined,
+          );
           return jsonResult({ ok: true, comment: result });
+        },
+      },
+      {
+        name: "commonly_react_to_message",
+        label: "Commonly React to Message",
+        description:
+          "React to a chat message with an emoji AS the agent identity. Use for social-presence signal on a peer's contribution (👍 / 🎉 / 👀) or as a micro-ack for a one-liner that doesn't need a worded reply ('thanks' / 'got it' / 'agreed'). DON'T use as a substitute for a substantive reply when @-mentioned with a real request — post words then (or NO_REPLY when there's truly nothing to add). Reactions are bounded social presence, not bulk noise. Pass remove=true to remove a previously-added reaction of the same emoji. Same kernel endpoint humans use; observers see the badge appear live via socket.",
+        parameters: Type.Object({
+          messageId: Type.String({
+            description: "Message ID to react to (from commonly_get_messages).",
+          }),
+          emoji: Type.String({ description: "A single emoji character, e.g. '👍' or '🎉'." }),
+          remove: Type.Optional(
+            Type.Boolean({
+              description:
+                "If true, remove a previously-added reaction of this emoji instead of adding one.",
+            }),
+          ),
+        }),
+        async execute(_id: string, params: Record<string, unknown>) {
+          const messageId = readStringParam(params, "messageId", { required: true });
+          const emoji = readStringParam(params, "emoji", { required: true });
+          const remove = params.remove === true;
+          const result = await client.reactToMessage(messageId, emoji, { remove });
+          return jsonResult({ ok: true, reaction: result });
         },
       },
       {
@@ -350,7 +385,9 @@ export class CommonlyTools {
           "Fetch recent chat messages from a Commonly pod. Returns [{id, username, content, isBot, createdAt}]. Use to find human messages to respond to — filter by isBot:false and skip ids already in repliedMsgs[].",
         parameters: Type.Object({
           podId: Type.String({ description: "Pod ID to fetch messages from" }),
-          limit: Type.Optional(Type.Number({ description: "Number of messages to return (default 10, max 20)" })),
+          limit: Type.Optional(
+            Type.Number({ description: "Number of messages to return (default 10, max 20)" }),
+          ),
         }),
         async execute(_id: string, params: Record<string, unknown>) {
           const podId = readStringParam(params, "podId", { required: true });
@@ -380,7 +417,9 @@ export class CommonlyTools {
         description:
           "List public Commonly pods. Returns podId, name, description, memberCount, and isMember (whether you are already in the pod). Use to discover existing pods before deciding to join via commonly_create_pod.",
         parameters: Type.Object({
-          limit: Type.Optional(Type.Number({ description: "Number of pods to return (default 20, max 50)" })),
+          limit: Type.Optional(
+            Type.Number({ description: "Number of pods to return (default 20, max 50)" }),
+          ),
         }),
         async execute(_id: string, params: Record<string, unknown>) {
           const limit = readNumberParam(params, "limit") ?? 20;
@@ -395,7 +434,9 @@ export class CommonlyTools {
           "Fetch recent posts from a pod. Returns postId (= threadId for commonly_post_thread_comment), author, content preview, source URL, comment count, and recent human comments. Use to discover threads worth engaging with.",
         parameters: Type.Object({
           podId: Type.String({ description: "Pod ID to fetch posts from" }),
-          limit: Type.Optional(Type.Number({ description: "Number of posts to return (default 5, max 10)" })),
+          limit: Type.Optional(
+            Type.Number({ description: "Number of posts to return (default 5, max 10)" }),
+          ),
         }),
         async execute(_id: string, params: Record<string, unknown>) {
           const podId = readStringParam(params, "podId", { required: true });
@@ -444,9 +485,13 @@ export class CommonlyTools {
         parameters: Type.Object({
           podId: Type.String({ description: "The pod ID to post into" }),
           content: Type.String({ description: "The post content" }),
-          category: Type.Optional(Type.String({ description: "Category label (e.g. 'AI & Technology', 'Science')" })),
+          category: Type.Optional(
+            Type.String({ description: "Category label (e.g. 'AI & Technology', 'Science')" }),
+          ),
           tags: Type.Optional(Type.Array(Type.String(), { description: "Optional tags" })),
-          sourceUrl: Type.Optional(Type.String({ description: "URL of the source article or web page" })),
+          sourceUrl: Type.Optional(
+            Type.String({ description: "URL of the source article or web page" }),
+          ),
         }),
         async execute(_id: string, params: Record<string, unknown>) {
           const podId = readStringParam(params, "podId", { required: true });
@@ -484,8 +529,12 @@ export class CommonlyTools {
           "List tasks for a pod. Optionally filter by assignee (agent instanceId) and/or status (pending/claimed/done/blocked). Returns [{taskId, title, assignee, status, dep, claimedBy, prUrl, notes}].",
         parameters: Type.Object({
           podId: Type.String({ description: "Pod ID to list tasks for" }),
-          assignee: Type.Optional(Type.String({ description: "Filter by assignee instanceId (e.g. 'nova')" })),
-          status: Type.Optional(Type.String({ description: "Filter by status: pending, claimed, done, blocked" })),
+          assignee: Type.Optional(
+            Type.String({ description: "Filter by assignee instanceId (e.g. 'nova')" }),
+          ),
+          status: Type.Optional(
+            Type.String({ description: "Filter by status: pending, claimed, done, blocked" }),
+          ),
         }),
         async execute(_id: string, params: Record<string, unknown>) {
           const podId = readStringParam(params, "podId", { required: true });
@@ -506,14 +555,36 @@ export class CommonlyTools {
         parameters: Type.Object({
           podId: Type.String({ description: "Pod ID to create the task in" }),
           title: Type.String({ description: "Task title / description" }),
-          assignee: Type.Optional(Type.String({ description: "Agent instanceId to assign (e.g. 'nova')" })),
-          dep: Type.Optional(Type.String({ description: "Blocking dependency taskId (e.g. 'TASK-001')" })),
-          depMockOk: Type.Optional(Type.Boolean({ description: "True if task can start with mocks even if dep unmet" })),
-          source: Type.Optional(Type.String({ description: "Source: 'human' | 'agent' | 'github'" })),
-          sourceRef: Type.Optional(Type.String({ description: "External reference (e.g. 'GH#12'). Deduped — safe to call multiple times for the same issue." })),
-          githubIssueNumber: Type.Optional(Type.Number({ description: "GitHub issue number to link (enables auto-close on task complete)" })),
+          assignee: Type.Optional(
+            Type.String({ description: "Agent instanceId to assign (e.g. 'nova')" }),
+          ),
+          dep: Type.Optional(
+            Type.String({ description: "Blocking dependency taskId (e.g. 'TASK-001')" }),
+          ),
+          depMockOk: Type.Optional(
+            Type.Boolean({ description: "True if task can start with mocks even if dep unmet" }),
+          ),
+          source: Type.Optional(
+            Type.String({ description: "Source: 'human' | 'agent' | 'github'" }),
+          ),
+          sourceRef: Type.Optional(
+            Type.String({
+              description:
+                "External reference (e.g. 'GH#12'). Deduped — safe to call multiple times for the same issue.",
+            }),
+          ),
+          githubIssueNumber: Type.Optional(
+            Type.Number({
+              description: "GitHub issue number to link (enables auto-close on task complete)",
+            }),
+          ),
           githubIssueUrl: Type.Optional(Type.String({ description: "GitHub issue HTML URL" })),
-          createGithubIssue: Type.Optional(Type.Boolean({ description: "If true, create a new GitHub issue from this task (board→GitHub direction)" })),
+          createGithubIssue: Type.Optional(
+            Type.Boolean({
+              description:
+                "If true, create a new GitHub issue from this task (board→GitHub direction)",
+            }),
+          ),
         }),
         async execute(_id: string, params: Record<string, unknown>) {
           const podId = readStringParam(params, "podId", { required: true });
@@ -537,7 +608,11 @@ export class CommonlyTools {
             githubIssueUrl: githubIssueUrl || undefined,
             createGithubIssue: createGithubIssue || undefined,
           });
-          return jsonResult({ ok: !task.alreadyExists, task: task.task || task, alreadyExists: !!task.alreadyExists });
+          return jsonResult({
+            ok: !task.alreadyExists,
+            task: task.task || task,
+            alreadyExists: !!task.alreadyExists,
+          });
         },
       },
       {
@@ -554,7 +629,12 @@ export class CommonlyTools {
           const taskId = readStringParam(params, "taskId", { required: true });
           const result = await client.claimTask(podId, taskId!);
           if (result.error) {
-            return jsonResult({ ok: false, error: result.error, claimedBy: result.claimedBy, status: result.status });
+            return jsonResult({
+              ok: false,
+              error: result.error,
+              claimedBy: result.claimedBy,
+              status: result.status,
+            });
           }
           return jsonResult({ ok: true, task: result.task });
         },
@@ -567,7 +647,9 @@ export class CommonlyTools {
         parameters: Type.Object({
           podId: Type.String({ description: "Pod ID that owns the task" }),
           taskId: Type.String({ description: "Task ID to complete (e.g. 'TASK-001')" }),
-          prUrl: Type.Optional(Type.String({ description: "URL of the PR that fulfils this task" })),
+          prUrl: Type.Optional(
+            Type.String({ description: "URL of the PR that fulfils this task" }),
+          ),
           notes: Type.Optional(Type.String({ description: "Completion notes" })),
         }),
         async execute(_id: string, params: Record<string, unknown>) {
@@ -608,9 +690,17 @@ export class CommonlyTools {
         parameters: Type.Object({
           podId: Type.String({ description: "Pod ID that owns the task" }),
           taskId: Type.String({ description: "Task ID to update (e.g. 'TASK-001')" }),
-          assignee: Type.Optional(Type.String({ description: "New assignee (agent instanceId) or empty string to unassign" })),
-          status: Type.Optional(Type.String({ description: "New status: pending | claimed | done | blocked" })),
-          dep: Type.Optional(Type.String({ description: "Blocking dependency task ID, or empty string to clear" })),
+          assignee: Type.Optional(
+            Type.String({
+              description: "New assignee (agent instanceId) or empty string to unassign",
+            }),
+          ),
+          status: Type.Optional(
+            Type.String({ description: "New status: pending | claimed | done | blocked" }),
+          ),
+          dep: Type.Optional(
+            Type.String({ description: "Blocking dependency task ID, or empty string to clear" }),
+          ),
           prUrl: Type.Optional(Type.String({ description: "PR URL" })),
           notes: Type.Optional(Type.String({ description: "Notes" })),
           title: Type.Optional(Type.String({ description: "New title" })),
