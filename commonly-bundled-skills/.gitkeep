@@ -1,0 +1,10 @@
+# Placeholder so the Dockerfile's `COPY commonly-bundled-skills /opt/commonly-bundled-skills`
+# step succeeds on a fresh clone.
+#
+# Local-dev contributors building the clawdbot gateway from this fork (with the
+# default Dockerfile, not Dockerfile.commonly) need this directory to exist even
+# when empty. See Team-Commonly/commonly Phase 2.C — local-dev parity for
+# OpenClaw. The Commonly side default for clawdbot is COMMONLY_LOCAL_CLAWDBOT=0
+# (off), so this empty placeholder is the right shape for OSS-default builds;
+# real skills get bundled at build time via OPENCLAW_INSTALL_GH_CLI / per-deployment
+# variants.
