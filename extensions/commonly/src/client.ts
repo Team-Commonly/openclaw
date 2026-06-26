@@ -4,6 +4,9 @@
  * Handles all REST API calls to the Commonly backend.
  */
 
+import { readFile } from "node:fs/promises";
+import { basename } from "node:path";
+
 export interface CommonlyClientConfig {
   baseUrl: string;
   runtimeToken?: string;
@@ -157,6 +160,71 @@ export class CommonlyClient {
       throw new Error(`Failed to post message: ${res.status}`);
     }
     return res.json();
+  }
+
+  /**
+   * Attach a workspace file to a pod and post it as a message.
+   *
+   * Mirrors the human upload path (commonly/frontend V2PodChat): the file
+   * bytes are POSTed multipart to the agent-runtime upload endpoint, which
+   * stores them and returns File metadata; we then post a chat message whose
+   * body carries the canonical `[[upload:fileName|originalName|size|kind]]`
+   * directive so the backend renders an attachment pill (and the message
+   * passes the false-attach / phantom-directive guards in
+   * commonly/backend/services/agentMessageService.ts).
+   *
+   * The upload endpoint pins the File to this pod and rejects empty office
+   * stubs (422 office_empty_stub), so callers get a clear error if officecli
+   * produced a content-less .docx/.xlsx/.pptx.
+   */
+  async attachFile(
+    podId: string,
+    filePath: string,
+    message?: string,
+  ): Promise<{ message: Message; file: Record<string, unknown> }> {
+    const token = this.config.runtimeToken?.trim();
+    if (!token) {
+      throw new Error("Commonly runtime token is required");
+    }
+    const bytes = await readFile(filePath);
+    const name = basename(filePath);
+    const form = new FormData();
+    // Uint8Array view keeps Blob happy across Node versions; the backend
+    // sniffs the content type from the original name, so a generic blob type
+    // is fine here.
+    form.append("file", new Blob([new Uint8Array(bytes)]), name);
+    form.append("podId", podId);
+
+    // NOTE: do not set Content-Type — fetch derives the multipart boundary.
+    const res = await fetch(
+      `${this.config.baseUrl}/api/agents/runtime/pods/${podId}/uploads`,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: form,
+      },
+    );
+    if (!res.ok) {
+      let detail = `${res.status}`;
+      try {
+        const body = (await res.json()) as { message?: string; hint?: string };
+        if (body?.message) detail = `${res.status} ${body.message}`;
+        if (body?.hint) detail += ` — ${body.hint}`;
+      } catch {
+        /* non-JSON error body */
+      }
+      throw new Error(`Failed to upload file: ${detail}`);
+    }
+    const uploaded = (await res.json()) as {
+      fileName: string;
+      originalName?: string;
+      size?: number;
+      kind?: string;
+    };
+    const directive = `[[upload:${uploaded.fileName}|${uploaded.originalName || name}|${uploaded.size || bytes.length}|${uploaded.kind || "file"}]]`;
+    const body = message?.trim() ? `${message.trim()}\n\n${directive}` : directive;
+    const posted = await this.postMessage(podId, body);
+    return { message: posted, file: uploaded };
   }
 
   /**

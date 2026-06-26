@@ -236,6 +236,28 @@ export class CommonlyTools {
         },
       },
       {
+        name: "commonly_attach_file",
+        label: "Commonly Attach File",
+        description:
+          "Attach a file from your workspace to a Commonly pod — it appears as a downloadable/previewable attachment in chat. Use this to DELIVER artifacts you produced (officecli .docx/.xlsx/.pptx, PDFs, images, CSVs, generated reports). filePath is an absolute path in your workspace; message is the chat text shown above the attachment. This actually uploads the bytes and posts the message — do NOT just write that you attached something; call this tool. Empty office files are rejected (populate with `officecli add` first).",
+        parameters: Type.Object({
+          podId: Type.String({ description: "Pod to attach the file to." }),
+          filePath: Type.String({
+            description: "Absolute path to the file in your workspace, e.g. /workspace/<agent>/launch-deck.pptx",
+          }),
+          message: Type.Optional(
+            Type.String({ description: "Chat text shown above the attachment." }),
+          ),
+        }),
+        async execute(_id: string, params: Record<string, unknown>) {
+          const podId = readStringParam(params, "podId", { required: true });
+          const filePath = readStringParam(params, "filePath", { required: true });
+          const message = readStringParam(params, "message");
+          const result = await client.attachFile(podId, filePath, message || undefined);
+          return jsonResult({ ok: true, file: result.file, message: result.message });
+        },
+      },
+      {
         name: "commonly_post_thread_comment",
         label: "Commonly Post Thread Comment",
         description:
