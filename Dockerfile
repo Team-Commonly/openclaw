@@ -118,6 +118,15 @@ COPY --from=build --chown=node:node /app/extensions ./extensions
 COPY --from=build --chown=node:node /app/skills ./skills
 COPY --from=build --chown=node:node /app/docs ./docs
 
+# Bake the Commonly-bundled skill content (officecli + its specialized
+# sub-skills, pdf, markdown-converter, …) at /opt/commonly-bundled-skills so the
+# Commonly provisioner can copy <id>/ sub-files into each agent workspace at
+# provision time (agentProvisionerServiceK8s reads /opt/commonly-bundled-skills/<id>/).
+# The deploy workflow stages backend/commonly-bundled-skills/ into the build
+# context right before `docker build`; plain OSS builds get the in-repo
+# commonly-bundled-skills/ (only a .gitkeep), so this COPY always has a source.
+COPY --chown=node:node commonly-bundled-skills /opt/commonly-bundled-skills
+
 # Docker live-test runners invoke `pnpm` inside the runtime image.
 # Activate the exact pinned package manager now so the container does not
 # rely on a first-run network fetch or missing shims under the non-root user.
@@ -201,6 +210,32 @@ RUN if [ -n "$OPENCLAW_INSTALL_GH_CLI" ]; then \
         "$(dpkg --print-architecture)" > /etc/apt/sources.list.d/github-cli.list && \
       apt-get update && \
       DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends gh && \
+      apt-get clean && \
+      rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*; \
+    fi
+
+# Optionally install the officecli binary so agents can generate real
+# .docx/.xlsx/.pptx artifacts via the officecli bundled skill.
+# Build with: docker build --build-arg OPENCLAW_INSTALL_DOC_TOOLCHAIN=1 ...
+# officecli is a single self-contained binary (no LibreOffice/pandoc needed).
+# Installed to /usr/local/bin so it is on PATH for every agent user, rather
+# than the install script's default $HOME/.local/bin (not on the agent PATH,
+# and unreadable if the runtime drops privileges). ~50MB.
+ARG OPENCLAW_INSTALL_DOC_TOOLCHAIN=""
+RUN if [ -n "$OPENCLAW_INSTALL_DOC_TOOLCHAIN" ]; then \
+      apt-get update && \
+      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ca-certificates curl && \
+      arch="$(dpkg --print-architecture)" && \
+      case "$arch" in \
+        amd64) asset="officecli-linux-x64" ;; \
+        arm64) asset="officecli-linux-arm64" ;; \
+        *) echo "unsupported arch $arch for officecli" && exit 1 ;; \
+      esac && \
+      curl -fsSL "https://github.com/iOfficeAI/OfficeCLI/releases/latest/download/${asset}" \
+        -o /usr/local/bin/officecli && \
+      chmod +x /usr/local/bin/officecli && \
+      officecli --version && \
       apt-get clean && \
       rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*; \
     fi
