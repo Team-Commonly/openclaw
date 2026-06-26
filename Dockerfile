@@ -182,6 +182,29 @@ RUN if [ -n "$OPENCLAW_INSTALL_DOCKER_CLI" ]; then \
       rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*; \
     fi
 
+# Optionally install the GitHub CLI (gh) so agents can open pull requests.
+# Build with: docker build --build-arg OPENCLAW_INSTALL_GH_CLI=1 ...
+# Adds ~40MB. gh is not in the default Debian repos, so the official
+# cli.github.com apt source + signing key are added first. With a token in
+# GH_TOKEN (or GITHUB_TOKEN) gh authenticates non-interactively, so
+# `gh pr create` works from agent coding sessions.
+ARG OPENCLAW_INSTALL_GH_CLI=""
+RUN if [ -n "$OPENCLAW_INSTALL_GH_CLI" ]; then \
+      apt-get update && \
+      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ca-certificates curl gnupg && \
+      mkdir -p -m 0755 /etc/apt/keyrings && \
+      curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        -o /etc/apt/keyrings/githubcli-archive-keyring.gpg && \
+      chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg && \
+      printf 'deb [arch=%s signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main\n' \
+        "$(dpkg --print-architecture)" > /etc/apt/sources.list.d/github-cli.list && \
+      apt-get update && \
+      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends gh && \
+      apt-get clean && \
+      rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*; \
+    fi
+
 # Normalize extension paths so plugin safety checks do not reject
 # world-writable directories inherited from source file modes.
 RUN for dir in /app/extensions /app/.agent /app/.agents; do \
