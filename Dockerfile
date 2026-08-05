@@ -214,10 +214,12 @@ RUN if [ -n "$OPENCLAW_INSTALL_GH_CLI" ]; then \
       rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*; \
     fi
 
-# Optionally install the officecli binary so agents can generate real
-# .docx/.xlsx/.pptx artifacts via the officecli bundled skill.
+# Optionally install document generation and extraction tools for the Commonly
+# attachment flow. OfficeCLI creates and reads Office documents; poppler and
+# markitdown cover the PDF and fallback extraction paths in
+# commonly_read_attachment.
 # Build with: docker build --build-arg OPENCLAW_INSTALL_DOC_TOOLCHAIN=1 ...
-# officecli is a single self-contained binary (no LibreOffice/pandoc needed).
+# OfficeCLI is a single self-contained binary (no LibreOffice/pandoc needed).
 # Installed to /usr/local/bin so it is on PATH for every agent user, rather
 # than the install script's default $HOME/.local/bin (not on the agent PATH,
 # and unreadable if the runtime drops privileges). ~50MB.
@@ -225,7 +227,7 @@ ARG OPENCLAW_INSTALL_DOC_TOOLCHAIN=""
 RUN if [ -n "$OPENCLAW_INSTALL_DOC_TOOLCHAIN" ]; then \
       apt-get update && \
       DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        ca-certificates curl && \
+        ca-certificates curl poppler-utils python3 python3-pip && \
       arch="$(dpkg --print-architecture)" && \
       case "$arch" in \
         amd64) asset="officecli-linux-x64" ;; \
@@ -236,6 +238,9 @@ RUN if [ -n "$OPENCLAW_INSTALL_DOC_TOOLCHAIN" ]; then \
         -o /usr/local/bin/officecli && \
       chmod +x /usr/local/bin/officecli && \
       officecli --version && \
+      pip3 install --break-system-packages --no-cache-dir markitdown pypdf && \
+      pdftotext -v >/dev/null 2>&1 && \
+      python3 -c "import markitdown, pypdf" && \
       apt-get clean && \
       rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*; \
     fi

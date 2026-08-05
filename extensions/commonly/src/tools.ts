@@ -1,8 +1,29 @@
 import { spawn } from "node:child_process";
-import { accessSync, constants } from "node:fs";
+import { accessSync, constants, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join as joinPath } from "node:path";
 import { Type } from "@sinclair/typebox";
 import type { AnyAgentTool } from "openclaw/plugin-sdk";
 import { jsonResult, readNumberParam, readStringParam } from "openclaw/plugin-sdk";
+import type { AgentMemorySyncSections, MemorySectionName, MemoryVisibility } from "./client.js";
+
+const ALL_MEMORY_SECTIONS: ReadonlyArray<MemorySectionName> = [
+  "soul",
+  "long_term",
+  "daily",
+  "dedup_state",
+  "relationships",
+  "shared",
+  "runtime_meta",
+];
+
+const ARRAY_MEMORY_SECTIONS: ReadonlySet<MemorySectionName> = new Set(["daily", "relationships"]);
+
+const VALID_MEMORY_VISIBILITIES: ReadonlySet<MemoryVisibility> = new Set([
+  "private",
+  "pod",
+  "public",
+]);
 
 const ACPX_BIN_CANDIDATES = [
   "/app/node_modules/.pnpm/node_modules/.bin/acpx", // plugin-local install
@@ -243,7 +264,8 @@ export class CommonlyTools {
         parameters: Type.Object({
           podId: Type.String({ description: "Pod to attach the file to." }),
           filePath: Type.String({
-            description: "Absolute path to the file in your workspace, e.g. /workspace/<agent>/launch-deck.pptx",
+            description:
+              "Absolute path to the file in your workspace, e.g. /workspace/<agent>/launch-deck.pptx",
           }),
           message: Type.Optional(
             Type.String({ description: "Chat text shown above the attachment." }),
@@ -255,6 +277,106 @@ export class CommonlyTools {
           const message = readStringParam(params, "message");
           const result = await client.attachFile(podId, filePath, message || undefined);
           return jsonResult({ ok: true, file: result.file, message: result.message });
+        },
+      },
+      {
+        name: "commonly_read_attachment",
+        label: "Commonly Read Attachment",
+        description:
+          "Read a file attached in chat and return extracted text. Pass the `fileName` from an [[upload:fileName|...]] directive, not its human original name. " +
+          "Uses the current agent's runtime token and pod membership to authorize the read. Extracts Office files with officecli, PDFs with pdftotext, common text files directly, and other formats with markitdown.",
+        parameters: Type.Object({
+          fileName: Type.String({
+            description:
+              "Object-storage key from the first field of [[upload:fileName|originalName|size|kind]].",
+          }),
+          maxChars: Type.Optional(
+            Type.Number({
+              description: "Maximum extracted characters (default 16000, maximum 64000).",
+            }),
+          ),
+        }),
+        async execute(_id: string, params: Record<string, unknown>) {
+          const fileName = readStringParam(params, "fileName", { required: true });
+          const requestedCap = readNumberParam(params, "maxChars");
+          const maxChars = Math.min(Math.max(requestedCap || 16_000, 1_000), 64_000);
+
+          if (!/^[a-zA-Z0-9_.-]+\.[a-zA-Z0-9]+$/.test(fileName) || fileName.includes("..")) {
+            throw new Error(
+              `commonly_read_attachment: invalid fileName '${fileName}' — use the storage key from an [[upload:...]] directive`,
+            );
+          }
+
+          const bytes = await client.readAttachment(fileName);
+          if (bytes.length > 25 * 1024 * 1024) {
+            throw new Error(
+              `commonly_read_attachment: file too large (${bytes.length} bytes; cap is 25 MB)`,
+            );
+          }
+
+          const extension = (fileName.split(".").pop() || "").toLowerCase();
+          const directory = mkdtempSync(joinPath(tmpdir(), "commonly-read-"));
+          const localPath = joinPath(directory, fileName);
+          let extracted = "";
+          let extractor = "raw";
+
+          try {
+            writeFileSync(localPath, bytes);
+            const runExtractor = (command: string, args: string[]): Promise<string> =>
+              new Promise((resolve, reject) => {
+                const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
+                let stdout = "";
+                let stderr = "";
+                child.stdout.on("data", (chunk) => {
+                  stdout += chunk.toString("utf8");
+                });
+                child.stderr.on("data", (chunk) => {
+                  stderr += chunk.toString("utf8");
+                });
+                child.on("error", reject);
+                child.on("close", (code) => {
+                  if (code === 0) resolve(stdout);
+                  else reject(new Error(`${command} exited ${code}: ${stderr.slice(0, 400)}`));
+                });
+              });
+
+            if (["docx", "xlsx", "pptx"].includes(extension)) {
+              extractor = "officecli";
+              extracted = await runExtractor("officecli", ["view", localPath, "text"]);
+            } else if (extension === "pdf") {
+              extractor = "pdftotext";
+              extracted = await runExtractor("pdftotext", ["-layout", "-q", localPath, "-"]);
+            } else if (
+              ["md", "txt", "csv", "json", "log", "yaml", "yml", "xml", "html", "htm"].includes(
+                extension,
+              )
+            ) {
+              extracted = bytes.toString("utf8");
+            } else {
+              extractor = "markitdown";
+              extracted = await runExtractor("markitdown", [localPath]);
+            }
+          } finally {
+            try {
+              rmSync(directory, { recursive: true, force: true });
+            } catch {
+              /* best effort */
+            }
+          }
+
+          const totalChars = extracted.length;
+          const truncated = totalChars > maxChars;
+          return jsonResult({
+            ok: true,
+            fileName,
+            extractor,
+            sizeBytes: bytes.length,
+            totalChars,
+            truncated,
+            text: truncated
+              ? `${extracted.slice(0, maxChars)}\n\n[…truncated, ${totalChars - maxChars} more chars]`
+              : extracted,
+          });
         },
       },
       {
@@ -362,6 +484,155 @@ export class CommonlyTools {
           const content = readStringParam(params, "content", { required: true });
           await client.writeAgentMemory(content);
           return jsonResult({ ok: true });
+        },
+      },
+      {
+        name: "commonly_read_my_memory",
+        label: "Commonly Read My Memory",
+        description:
+          "Read this agent's typed memory envelope. With no section, returns all typed sections; otherwise returns exactly one of soul, long_term, daily, dedup_state, relationships, shared, or runtime_meta. Prefer this to the legacy commonly_read_agent_memory tool for new work.",
+        parameters: Type.Object({
+          section: Type.Optional(
+            Type.String({ description: "Optional typed memory section name." }),
+          ),
+        }),
+        async execute(_id: string, params: Record<string, unknown>) {
+          const section = readStringParam(params, "section");
+          if (
+            section !== undefined &&
+            !ALL_MEMORY_SECTIONS.includes(section as MemorySectionName)
+          ) {
+            return jsonResult({
+              ok: false,
+              error: `unknown section '${section}' (valid: ${ALL_MEMORY_SECTIONS.join(", ")})`,
+            });
+          }
+
+          const envelope = await client.readAgentMemory();
+          if (!section) {
+            return jsonResult({
+              ok: true,
+              content: envelope.content ?? "",
+              sections: envelope.sections ?? {},
+              sourceRuntime: envelope.sourceRuntime,
+              schemaVersion: envelope.schemaVersion,
+            });
+          }
+          const key = section as MemorySectionName;
+          return jsonResult({ ok: true, section: key, value: envelope.sections?.[key] ?? null });
+        },
+      },
+      {
+        name: "commonly_save_my_memory",
+        label: "Commonly Save My Memory",
+        description:
+          "Patch exactly one typed memory section. Use content for object sections; use entries for daily or relationships. Sibling sections are preserved. `cycles` is intentionally unavailable here: use commonly_log_cycle for its append-only contract.",
+        parameters: Type.Object({
+          section: Type.String({
+            description:
+              "soul | long_term | daily | dedup_state | relationships | shared | runtime_meta",
+          }),
+          content: Type.Optional(
+            Type.String({ description: "Content for a single-object section." }),
+          ),
+          visibility: Type.Optional(
+            Type.String({ description: "private | pod | public (defaults to private)." }),
+          ),
+          entries: Type.Optional(
+            Type.Array(Type.Unknown(), { description: "Entries for daily or relationships only." }),
+          ),
+        }),
+        async execute(_id: string, params: Record<string, unknown>) {
+          const sectionParam = readStringParam(params, "section", { required: true });
+          if (!ALL_MEMORY_SECTIONS.includes(sectionParam as MemorySectionName)) {
+            return jsonResult({
+              ok: false,
+              error: `unknown section '${sectionParam}' (valid: ${ALL_MEMORY_SECTIONS.join(", ")})`,
+            });
+          }
+          const section = sectionParam as MemorySectionName;
+          const hasEntries = Array.isArray(params.entries);
+          const content = readStringParam(params, "content");
+          if (hasEntries && content !== undefined) {
+            return jsonResult({ ok: false, error: "provide either entries or content, not both" });
+          }
+
+          let sections: AgentMemorySyncSections;
+          if (ARRAY_MEMORY_SECTIONS.has(section)) {
+            if (!hasEntries) {
+              return jsonResult({ ok: false, error: `section '${section}' requires entries` });
+            }
+            sections = { [section]: params.entries } as AgentMemorySyncSections;
+          } else {
+            if (content === undefined) {
+              return jsonResult({ ok: false, error: `section '${section}' requires content` });
+            }
+            const visibility = readStringParam(params, "visibility") ?? "private";
+            if (!VALID_MEMORY_VISIBILITIES.has(visibility as MemoryVisibility)) {
+              return jsonResult({
+                ok: false,
+                error: `visibility '${visibility}' must be private, pod, or public`,
+              });
+            }
+            sections = { [section]: { content, visibility } } as AgentMemorySyncSections;
+          }
+
+          try {
+            const result = await client.syncAgentMemory(sections, {
+              mode: "patch",
+              sourceRuntime: "openclaw",
+            });
+            return jsonResult({
+              ok: true,
+              section,
+              deduped: result.deduped ?? false,
+              schemaVersion: result.schemaVersion,
+            });
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            return jsonResult({ ok: false, error: `kernel rejected: ${message}` });
+          }
+        },
+      },
+      {
+        name: "commonly_log_cycle",
+        label: "Commonly Log Cycle",
+        description:
+          "Append one concise takeaway to this agent's cycles memory. This is the only cycles writer: it sends the kernel's append-only payload and never overwrites prior entries. New backends return truncated and evicted flags; if either flag is absent, this is an older backend and the response says nothing about whether content was shortened or history evicted.",
+        parameters: Type.Object({
+          content: Type.String({
+            description:
+              "A concise cycle takeaway. The backend may cap stored content and reports that explicitly.",
+          }),
+          podId: Type.Optional(
+            Type.String({ description: "Optional pod ID associated with the takeaway." }),
+          ),
+        }),
+        async execute(_id: string, params: Record<string, unknown>) {
+          const content = readStringParam(params, "content", { required: true });
+          const podId = readStringParam(params, "podId");
+          try {
+            const result = await client.syncAgentMemory(
+              { cycles: { append: { content, ...(podId ? { podId } : {}) } } },
+              { mode: "patch", sourceRuntime: "openclaw" },
+            );
+            return jsonResult({
+              ok: true,
+              schemaVersion: result.schemaVersion,
+              cyclesAppended: result.cyclesAppended,
+              truncated: result.truncated,
+              ...(result.truncated
+                ? { storedChars: result.storedChars, submittedChars: result.submittedChars }
+                : {}),
+              evicted: result.evicted,
+              ...(result.evicted
+                ? { retainedEntries: result.retainedEntries, entryCap: result.entryCap }
+                : {}),
+            });
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            return jsonResult({ ok: false, error: `kernel rejected: ${message}` });
+          }
         },
       },
       {
@@ -542,6 +813,36 @@ export class CommonlyTools {
           const podId = readStringParam(params, "podId", { required: true });
           const result = await client.selfInstall(podId);
           return jsonResult({ ok: true, ...result });
+        },
+      },
+      {
+        name: "commonly_open_dm",
+        label: "Commonly Open Agent DM",
+        description:
+          "Open or retrieve a private 1:1 DM with an agent that already shares a pod with you. Idempotent: repeated calls for the same target return the same pod. Use the returned podId with commonly_post_message to send the message.",
+        parameters: Type.Object({
+          agentName: Type.String({ description: "Target agent registry name." }),
+          instanceId: Type.Optional(
+            Type.String({ description: "Target instance ID; defaults server-side to default." }),
+          ),
+          originPodId: Type.Optional(
+            Type.String({ description: "Optional shared pod that supplied the context." }),
+          ),
+        }),
+        async execute(_id: string, params: Record<string, unknown>) {
+          const agentName = readStringParam(params, "agentName", { required: true });
+          const instanceId = readStringParam(params, "instanceId");
+          const originPodId = readStringParam(params, "originPodId");
+          const result = await client.openAgentDm(
+            { agentName, ...(instanceId ? { instanceId } : {}) },
+            originPodId || undefined,
+          );
+          return jsonResult({
+            ok: true,
+            podId: result.room._id,
+            podName: result.room.name,
+            autoJoined: result.autoJoined,
+          });
         },
       },
       {

@@ -119,4 +119,108 @@ describe("CommonlyClient", () => {
       await expect(client.reactToMessage("msg-42", "🎉")).rejects.toThrow(/403/);
     });
   });
+
+  describe("typed agent memory", () => {
+    it("reads the v1 blob and v2 typed sections together", async () => {
+      fetchMock.mockResolvedValue(
+        createResponse({
+          content: "legacy",
+          sections: { long_term: { content: "curated" } },
+          sourceRuntime: "openclaw",
+          schemaVersion: 2,
+        }),
+      );
+      const client = new CommonlyClient({ baseUrl: "http://localhost:5000", runtimeToken: "rt" });
+
+      const result = await client.readAgentMemory();
+
+      expect(result.content).toBe("legacy");
+      expect(result.sections?.long_term?.content).toBe("curated");
+      expect(result.sourceRuntime).toBe("openclaw");
+      expect(result.schemaVersion).toBe(2);
+    });
+
+    it("syncs a typed memory patch through the runtime endpoint", async () => {
+      fetchMock.mockResolvedValue(createResponse({ ok: true, schemaVersion: 2 }));
+      const client = new CommonlyClient({ baseUrl: "http://localhost:5000", runtimeToken: "rt" });
+
+      await client.syncAgentMemory(
+        { long_term: { content: "remember this" } },
+        { mode: "patch", sourceRuntime: "openclaw" },
+      );
+
+      expect(fetchMock).toHaveBeenCalledWith(
+        "http://localhost:5000/api/agents/runtime/memory/sync",
+        expect.objectContaining({
+          method: "POST",
+          headers: expect.objectContaining({ Authorization: "Bearer rt" }),
+        }),
+      );
+      expect(JSON.parse((fetchMock.mock.calls[0]![1] as { body: string }).body)).toEqual({
+        sections: { long_term: { content: "remember this" } },
+        mode: "patch",
+        sourceRuntime: "openclaw",
+      });
+    });
+
+    it("preserves the append-only cycles payload shape", async () => {
+      fetchMock.mockResolvedValue(createResponse({ ok: true, cyclesAppended: true }));
+      const client = new CommonlyClient({ baseUrl: "http://localhost:5000", runtimeToken: "rt" });
+
+      await client.syncAgentMemory(
+        { cycles: { append: { content: "verified a port", podId: "pod-1" } } },
+        { mode: "patch", sourceRuntime: "openclaw" },
+      );
+
+      expect(JSON.parse((fetchMock.mock.calls[0]![1] as { body: string }).body)).toEqual({
+        sections: { cycles: { append: { content: "verified a port", podId: "pod-1" } } },
+        mode: "patch",
+        sourceRuntime: "openclaw",
+      });
+    });
+  });
+
+  describe("agent DM", () => {
+    it("opens a DM with its target identity and runtime token", async () => {
+      fetchMock.mockResolvedValue(
+        createResponse({ room: { _id: "dm-1", name: "Peer" }, autoJoined: false }),
+      );
+      const client = new CommonlyClient({ baseUrl: "http://localhost:5000", runtimeToken: "rt" });
+
+      const result = await client.openAgentDm(
+        { agentName: "openclaw", instanceId: "peer" },
+        "pod-1",
+      );
+
+      expect(result.room._id).toBe("dm-1");
+      expect(fetchMock).toHaveBeenCalledWith(
+        "http://localhost:5000/api/agents/runtime/agent-dm",
+        expect.objectContaining({
+          method: "POST",
+          headers: expect.objectContaining({ Authorization: "Bearer rt" }),
+        }),
+      );
+      expect(JSON.parse((fetchMock.mock.calls[0]![1] as { body: string }).body)).toEqual({
+        target: { agentName: "openclaw", instanceId: "peer" },
+        originPodId: "pod-1",
+      });
+    });
+  });
+
+  it("reads a pod attachment with the runtime token", async () => {
+    const bytes = new TextEncoder().encode("attachment text");
+    fetchMock.mockResolvedValue({
+      ok: true,
+      arrayBuffer: async () => bytes.buffer,
+    });
+    const client = new CommonlyClient({ baseUrl: "http://localhost:5000", runtimeToken: "rt" });
+
+    await expect(client.readAttachment("brief.txt")).resolves.toEqual(
+      Buffer.from("attachment text"),
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:5000/api/uploads/brief.txt",
+      expect.objectContaining({ headers: expect.objectContaining({ Authorization: "Bearer rt" }) }),
+    );
+  });
 });

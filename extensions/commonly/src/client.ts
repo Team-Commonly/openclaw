@@ -15,6 +15,53 @@ export interface CommonlyClientConfig {
   instanceId?: string;
 }
 
+// ADR-003's typed memory envelope. `cycles` has a separate append-only write
+// shape, so it is deliberately excluded from MemorySectionName below.
+export type MemoryVisibility = "private" | "pod" | "public";
+
+export interface MemorySection {
+  content: string;
+  visibility?: MemoryVisibility;
+  byteSize?: number;
+  updatedAt?: string;
+}
+
+export interface DailySection {
+  date: string;
+  content: string;
+  visibility?: MemoryVisibility;
+}
+
+export interface RelationshipNote {
+  otherInstanceId: string;
+  notes?: string;
+  visibility?: MemoryVisibility;
+  updatedAt?: string;
+}
+
+export interface CycleEntry {
+  content: string;
+  ts?: string;
+  podId?: string;
+}
+
+export interface AgentMemorySections {
+  soul?: MemorySection;
+  long_term?: MemorySection;
+  daily?: DailySection[];
+  dedup_state?: MemorySection;
+  relationships?: RelationshipNote[];
+  shared?: MemorySection;
+  runtime_meta?: MemorySection;
+  cycles?: { entries?: CycleEntry[]; visibility?: MemoryVisibility };
+}
+
+export type MemorySectionName = Exclude<keyof AgentMemorySections, "cycles">;
+
+export type AgentMemorySyncSections = Omit<AgentMemorySections, "cycles"> & {
+  cycles?: { append: CycleEntry };
+};
+
 export interface PodContext {
   pod?: {
     name: string;
@@ -196,14 +243,11 @@ export class CommonlyClient {
     form.append("podId", podId);
 
     // NOTE: do not set Content-Type — fetch derives the multipart boundary.
-    const res = await fetch(
-      `${this.config.baseUrl}/api/agents/runtime/pods/${podId}/uploads`,
-      {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-        body: form,
-      },
-    );
+    const res = await fetch(`${this.config.baseUrl}/api/agents/runtime/pods/${podId}/uploads`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: form,
+    });
     if (!res.ok) {
       let detail = `${res.status}`;
       try {
@@ -487,9 +531,15 @@ export class CommonlyClient {
   }
 
   /**
-   * Read this agent's personal MEMORY.md (stored in backend, persistent across sessions)
+   * Read this agent's personal memory. The v1 content blob remains for
+   * compatibility; new callers should use the typed sections envelope.
    */
-  async readAgentMemory(): Promise<{ content: string }> {
+  async readAgentMemory(): Promise<{
+    content: string;
+    sections?: AgentMemorySections;
+    sourceRuntime?: string;
+    schemaVersion?: number;
+  }> {
     const res = await fetch(`${this.config.baseUrl}/api/agents/runtime/memory`, {
       headers: this.runtimeHeaders,
     });
@@ -510,6 +560,58 @@ export class CommonlyClient {
   }
 
   /**
+   * Patch or replace typed agent-memory sections. Cycles are only accepted as
+   * an append payload, matching the kernel's append-only contract.
+   */
+  async syncAgentMemory(
+    sections: AgentMemorySyncSections,
+    options: { mode: "full" | "patch"; sourceRuntime?: string },
+  ): Promise<{
+    ok: true;
+    deduped?: boolean;
+    schemaVersion?: number;
+    version?: number;
+    cyclesAppended?: boolean;
+    truncated?: boolean;
+    storedChars?: number;
+    submittedChars?: number;
+    evicted?: boolean;
+    retainedEntries?: number;
+    entryCap?: number;
+  }> {
+    const res = await fetch(`${this.config.baseUrl}/api/agents/runtime/memory/sync`, {
+      method: "POST",
+      headers: this.runtimeHeaders,
+      body: JSON.stringify({
+        sections,
+        mode: options.mode,
+        ...(options.sourceRuntime !== undefined ? { sourceRuntime: options.sourceRuntime } : {}),
+      }),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`Failed to sync agent memory: ${res.status} ${text}`);
+    }
+    return res.json();
+  }
+
+  /**
+   * Fetch an attachment with the agent runtime token. The uploads route uses
+   * the same pod-membership ACL as agent writes; callers receive bytes only
+   * after that authorization succeeds.
+   */
+  async readAttachment(fileName: string): Promise<Buffer> {
+    const res = await fetch(`${this.config.baseUrl}/api/uploads/${encodeURIComponent(fileName)}`, {
+      headers: this.runtimeHeaders,
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`Failed to read attachment: ${res.status} ${text}`);
+    }
+    return Buffer.from(await res.arrayBuffer());
+  }
+
+  /**
    * Self-install this agent into an agent-owned pod
    */
   async selfInstall(
@@ -524,6 +626,37 @@ export class CommonlyClient {
     );
     if (!res.ok) {
       throw new Error(`Failed to self-install into pod: ${res.status}`);
+    }
+    return res.json();
+  }
+
+  /**
+   * Open or retrieve a 1:1 agent DM. The server enforces that both agents
+   * already share a pod before allowing the private room.
+   */
+  async openAgentDm(
+    target: { agentName: string; instanceId?: string },
+    originPodId?: string,
+  ): Promise<{
+    room: { _id: string; name?: string; type?: string; members?: unknown[] };
+    autoJoined: boolean;
+  }> {
+    const body: Record<string, unknown> = {
+      target: {
+        agentName: target.agentName,
+        ...(target.instanceId ? { instanceId: target.instanceId } : {}),
+      },
+    };
+    if (originPodId) body.originPodId = originPodId;
+
+    const res = await fetch(`${this.config.baseUrl}/api/agents/runtime/agent-dm`, {
+      method: "POST",
+      headers: this.runtimeHeaders,
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`Failed to open agent DM: ${res.status} ${text}`);
     }
     return res.json();
   }
