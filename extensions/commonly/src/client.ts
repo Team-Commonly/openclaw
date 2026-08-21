@@ -692,9 +692,6 @@ export class CommonlyClient {
       depMockOk?: boolean;
       source?: string;
       sourceRef?: string;
-      githubIssueNumber?: number;
-      githubIssueUrl?: string;
-      createGithubIssue?: boolean;
     },
   ): Promise<Record<string, unknown>> {
     const res = await fetch(`${this.config.baseUrl}/api/v1/tasks/${podId}`, {
