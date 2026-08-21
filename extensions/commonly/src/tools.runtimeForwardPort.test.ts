@@ -54,6 +54,41 @@ describe("CommonlyTools runtime forward port", () => {
     expect(result.details).toMatchObject({ truncated: false, evicted: false });
   });
 
+  it("keeps task creation independent of GitHub issue fields", async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ task: { taskId: "TASK-001" } }),
+    });
+    const client = new CommonlyClient({ baseUrl: "http://localhost:5000", runtimeToken: "rt" });
+    const tools = new CommonlyTools(client);
+    const definition = tools
+      .getToolDefinitions()
+      .find((tool) => tool.name === "commonly_create_task") as unknown as {
+      parameters: { properties: Record<string, unknown> };
+    };
+
+    expect(definition.parameters.properties).not.toHaveProperty("githubIssueNumber");
+    expect(definition.parameters.properties).not.toHaveProperty("githubIssueUrl");
+    expect(definition.parameters.properties).not.toHaveProperty("createGithubIssue");
+
+    await tools.execute("commonly_create_task", {
+      podId: "pod-1",
+      title: "Keep generic provenance",
+      source: "import",
+      sourceRef: "external:ticket:42",
+      githubIssueNumber: 42,
+      githubIssueUrl: "https://github.com/Team-Commonly/commonly/issues/42",
+      createGithubIssue: true,
+    });
+
+    expect(JSON.parse((fetchMock.mock.calls[0]![1] as { body: string }).body)).toEqual({
+      title: "Keep generic provenance",
+      depMockOk: false,
+      source: "import",
+      sourceRef: "external:ticket:42",
+    });
+  });
+
   it("reads and patches typed memory through the forward-ported tools", async () => {
     fetchMock
       .mockResolvedValueOnce({

@@ -888,24 +888,14 @@ export class CommonlyTools {
             Type.Boolean({ description: "True if task can start with mocks even if dep unmet" }),
           ),
           source: Type.Optional(
-            Type.String({ description: "Source: 'human' | 'agent' | 'github'" }),
+            Type.String({
+              description: "Provenance label (for example: 'human', 'agent', or 'import')",
+            }),
           ),
           sourceRef: Type.Optional(
             Type.String({
               description:
-                "External reference (e.g. 'GH#12'). Deduped — safe to call multiple times for the same issue.",
-            }),
-          ),
-          githubIssueNumber: Type.Optional(
-            Type.Number({
-              description: "GitHub issue number to link (enables auto-close on task complete)",
-            }),
-          ),
-          githubIssueUrl: Type.Optional(Type.String({ description: "GitHub issue HTML URL" })),
-          createGithubIssue: Type.Optional(
-            Type.Boolean({
-              description:
-                "If true, create a new GitHub issue from this task (board→GitHub direction)",
+                "External source record reference. Deduped — safe to call multiple times for the same record.",
             }),
           ),
         }),
@@ -917,9 +907,6 @@ export class CommonlyTools {
           const depMockOk = params.depMockOk === true;
           const source = readStringParam(params, "source");
           const sourceRef = readStringParam(params, "sourceRef");
-          const githubIssueNumber = params.githubIssueNumber as number | undefined;
-          const githubIssueUrl = readStringParam(params, "githubIssueUrl");
-          const createGithubIssue = params.createGithubIssue === true;
           const task = await client.createTask(podId, {
             title: title!,
             assignee: assignee || undefined,
@@ -927,9 +914,6 @@ export class CommonlyTools {
             depMockOk,
             source: source || undefined,
             sourceRef: sourceRef || undefined,
-            githubIssueNumber: githubIssueNumber || undefined,
-            githubIssueUrl: githubIssueUrl || undefined,
-            createGithubIssue: createGithubIssue || undefined,
           });
           return jsonResult({
             ok: !task.alreadyExists,
@@ -1059,7 +1043,7 @@ export class CommonlyTools {
         name: "commonly_create_github_issue",
         label: "Commonly Create GitHub Issue",
         description:
-          "Create a new GitHub issue on Team-Commonly/commonly. Use when you want to track a task publicly on GitHub. Returns { number, title, url }. Tip: you can then call commonly_create_task with githubIssueNumber to link board and GitHub.",
+          "Create a new GitHub issue on Team-Commonly/commonly. Returns { number, title, url }.",
         parameters: Type.Object({
           title: Type.String({ description: "Issue title" }),
           body: Type.Optional(Type.String({ description: "Issue body / description" })),
