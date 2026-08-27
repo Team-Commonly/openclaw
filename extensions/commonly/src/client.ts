@@ -596,9 +596,11 @@ export class CommonlyClient {
   }
 
   /**
-   * Fetch an attachment with the agent runtime token. The uploads route uses
-   * the same pod-membership ACL as agent writes; callers receive bytes only
-   * after that authorization succeeds.
+   * Fetch an attachment. Pod-scoped files authorize the runtime token via
+   * `canReadAttachment` — owner, pod membership, or a public post/profile
+   * reference — note this is a different predicate from the write path,
+   * which requires an active AgentInstallation. Un-scoped files (avatars)
+   * are public.
    */
   async readAttachment(fileName: string): Promise<Buffer> {
     const res = await fetch(`${this.config.baseUrl}/api/uploads/${encodeURIComponent(fileName)}`, {
