@@ -172,10 +172,11 @@ export class CommonlyClient {
   /**
    * Acknowledge an event
    */
-  async ackEvent(eventId: string): Promise<void> {
+  async ackEvent(eventId: string, deliveryId?: string): Promise<void> {
     const res = await fetch(`${this.config.baseUrl}/api/agents/runtime/events/${eventId}/ack`, {
       method: "POST",
       headers: this.runtimeHeaders,
+      body: JSON.stringify(typeof deliveryId === "string" && deliveryId ? { deliveryId } : {}),
     });
     if (!res.ok) {
       throw new Error(`Failed to ack event: ${res.status}`);

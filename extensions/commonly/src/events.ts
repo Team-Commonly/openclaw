@@ -6,6 +6,9 @@ export type CommonlyEventType =
   | (string & {});
 
 export type CommonlyEventPayload = {
+  // ADR-026 D6: minted by the kernel when this event is claimed and echoed
+  // with the acknowledgement so a stale delivery cannot settle a replacement.
+  deliveryId?: string;
   messageId?: string;
   content?: string;
   userId?: string;
