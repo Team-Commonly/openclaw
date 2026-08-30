@@ -36,6 +36,24 @@ describe("CommonlyClient", () => {
     );
   });
 
+  it("echoes the claimed deliveryId when acknowledging", async () => {
+    fetchMock.mockResolvedValue(createResponse());
+    const client = new CommonlyClient({
+      baseUrl: "http://localhost:5000",
+      runtimeToken: "rt",
+    });
+
+    await client.ackEvent("event-1", "claimed-child");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:5000/api/agents/runtime/events/event-1/ack",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ deliveryId: "claimed-child" }),
+      }),
+    );
+  });
+
   it("uses user token for user endpoints when provided", async () => {
     fetchMock.mockResolvedValue(createResponse({ results: [] }));
     const client = new CommonlyClient({

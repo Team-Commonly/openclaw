@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import {
   buildChannelConfigSchema,
   createReplyPrefixContext,
@@ -5,12 +6,10 @@ import {
   type ChannelPlugin,
   type ReplyPayload,
 } from "openclaw/plugin-sdk";
-
 import { CommonlyClient } from "./client.js";
-import { CommonlyWebSocket } from "./websocket.js";
-import type { CommonlyEvent } from "./events.js";
-
 import { CommonlyConfigSchema } from "./config-schema.js";
+import { parseInlineDirectives } from "./directive-tags.js";
+import type { CommonlyEvent } from "./events.js";
 import { getCommonlyRuntime } from "./runtime.js";
 import {
   listCommonlyAccountIds,
@@ -18,8 +17,7 @@ import {
   resolveDefaultCommonlyAccountId,
   type ResolvedCommonlyAccount,
 } from "./types.js";
-import { parseInlineDirectives } from "./directive-tags.js";
-import { readFileSync } from "node:fs";
+import { CommonlyWebSocket } from "./websocket.js";
 
 type CommonlyConnection = {
   ws: CommonlyWebSocket;
@@ -29,7 +27,10 @@ type CommonlyConnection = {
 const activeConnections = new Map<string, CommonlyConnection>();
 
 const normalizePodId = (raw: string) =>
-  raw.replace(/^commonly:/i, "").replace(/^pod:/i, "").trim();
+  raw
+    .replace(/^commonly:/i, "")
+    .replace(/^pod:/i, "")
+    .trim();
 
 const buildSummaryMessage = (summary?: CommonlyEvent["payload"]["summary"]): string => {
   if (!summary) return "";
@@ -69,9 +70,11 @@ const formatEnsembleTurnBody = (event: CommonlyEvent): string => {
   const lines: string[] = [];
   lines.push(`Ensemble topic: ${context.topic}`);
   lines.push(`Turn: ${context.turnNumber} (round ${context.roundNumber})`);
-  lines.push(context.isStarter
-    ? "You are the starter. Provide the opening message."
-    : "You are responding to the ongoing discussion.");
+  lines.push(
+    context.isStarter
+      ? "You are the starter. Provide the opening message."
+      : "You are responding to the ongoing discussion.",
+  );
 
   const participants = event.payload?.participants || [];
   if (participants.length > 0) {
@@ -179,7 +182,10 @@ export const commonlyPlugin: ChannelPlugin<ResolvedCommonlyAccount> = {
     deliveryMode: "direct",
     textChunkLimit: 8000,
     sendText: async ({ to, text, threadId, accountId }) => {
-      const account = resolveCommonlyAccount({ cfg: getCommonlyRuntime().config.loadConfig(), accountId });
+      const account = resolveCommonlyAccount({
+        cfg: getCommonlyRuntime().config.loadConfig(),
+        accountId,
+      });
       const client = new CommonlyClient({
         baseUrl: account.baseUrl,
         runtimeToken: account.runtimeToken,
@@ -198,7 +204,10 @@ export const commonlyPlugin: ChannelPlugin<ResolvedCommonlyAccount> = {
       return { channel: "commonly", messageId: `${podId}:${Date.now()}` };
     },
     sendMedia: async ({ to, text, mediaUrl, threadId, accountId }) => {
-      const account = resolveCommonlyAccount({ cfg: getCommonlyRuntime().config.loadConfig(), accountId });
+      const account = resolveCommonlyAccount({
+        cfg: getCommonlyRuntime().config.loadConfig(),
+        accountId,
+      });
       const client = new CommonlyClient({
         baseUrl: account.baseUrl,
         runtimeToken: account.runtimeToken,
@@ -207,10 +216,9 @@ export const commonlyPlugin: ChannelPlugin<ResolvedCommonlyAccount> = {
         instanceId: account.instanceId,
       });
       const podId = normalizePodId(to);
-      const message = [
-        sanitizeOutboundText(text ?? ""),
-        mediaUrl?.trim() || "",
-      ].filter(Boolean).join("\n");
+      const message = [sanitizeOutboundText(text ?? ""), mediaUrl?.trim() || ""]
+        .filter(Boolean)
+        .join("\n");
       if (threadId) {
         await client.postThreadComment(String(threadId), message);
         return { channel: "commonly", messageId: String(threadId) };
@@ -345,7 +353,7 @@ export const commonlyPlugin: ChannelPlugin<ResolvedCommonlyAccount> = {
             );
           }
           if (event._id) {
-            await client.ackEvent(event._id);
+            await client.ackEvent(event._id, event.payload?.deliveryId);
             ctx.log?.info?.(`[${connectionKey}] summary.request acked id=${eventId}`);
           }
           return;
@@ -353,9 +361,11 @@ export const commonlyPlugin: ChannelPlugin<ResolvedCommonlyAccount> = {
 
         const rawContent = resolveInboundBody(event);
         if (!rawContent) {
-          ctx.log?.info?.(`[${connectionKey}] event skipped (empty body) id=${eventId} type=${event.type}`);
+          ctx.log?.info?.(
+            `[${connectionKey}] event skipped (empty body) id=${eventId} type=${event.type}`,
+          );
           if (event._id) {
-            await client.ackEvent(event._id);
+            await client.ackEvent(event._id, event.payload?.deliveryId);
             ctx.log?.info?.(`[${connectionKey}] empty-body acked id=${eventId}`);
           }
           return;
@@ -495,8 +505,8 @@ export const commonlyPlugin: ChannelPlugin<ResolvedCommonlyAccount> = {
                   heartbeatTrigger: event.payload?.trigger,
                 });
                 ctx.log?.info?.(
-                  `[${connectionKey}] message posted id=${eventId} pod=${podId} chars=${message.length} `
-                  + `postedId=${String(posted?.id || "n/a")}`,
+                  `[${connectionKey}] message posted id=${eventId} pod=${podId} chars=${message.length} ` +
+                    `postedId=${String(posted?.id || "n/a")}`,
                 );
                 if (event.type === "ensemble.turn" && !ensembleResponseSent) {
                   const ensembleId = event.payload?.ensembleId;
@@ -526,7 +536,7 @@ export const commonlyPlugin: ChannelPlugin<ResolvedCommonlyAccount> = {
         });
 
         if (event._id) {
-          await client.ackEvent(event._id);
+          await client.ackEvent(event._id, event.payload?.deliveryId);
           ctx.log?.info?.(`[${connectionKey}] event acked id=${eventId} type=${event.type}`);
         }
       });
